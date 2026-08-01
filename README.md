@@ -2,7 +2,7 @@
 
 <img src="https://raw.githubusercontent.com/cronoklee/claude-control/main/media/screenshot.png" alt="Claude Control sidebar screenshot" align="right" width="300">
 
-The missing UI for Claude Code Extension. See every Claude Code conversation on your machine in one sidebar - which are working, which are waiting on you, and which are done.
+The missing UI for Claude Code Extension for VS Code. See every Claude Code conversation on your machine in one sidebar - which are working, which are waiting on you, and which are done.
 
 If you run more than one Claude session at a time, you know the problem: a session hits a permission prompt or asks a question, and then just sits there. Claude Control puts them all in one list, newest first, so nothing stalls unnoticed.
 
