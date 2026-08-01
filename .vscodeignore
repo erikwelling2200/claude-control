@@ -1,0 +1,17 @@
+.vscode/**
+.gitignore
+.git/**
+node_modules/**
+src/**
+tools/**
+esbuild.mjs
+tsconfig.json
+*.vsix
+**/*.map
+**/*.ts
+dist/probe.mjs
+dist/hooktest.mjs
+dist/statetest.mjs
+dist/paneltest.mjs
+media/Thumbs.db
+**/Thumbs.db

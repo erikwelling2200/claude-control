@@ -1,0 +1,226 @@
+{
+	"name": "claude-control",
+	"displayName": "Claude Control",
+	"description": "Overview of every Claude Code conversation on this machine, newest first, with live busy / needs-input / finished indicators.",
+	"version": "0.1.0",
+	"publisher": "cronoklee",
+	"author": {
+		"name": "cronoklee",
+		"url": "https://github.com/cronoklee"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/cronoklee/claude-control"
+	},
+	"homepage": "https://github.com/cronoklee",
+	"bugs": {
+		"url": "https://github.com/cronoklee/claude-control/issues"
+	},
+	"icon": "media/icon_128.png",
+	"keywords": [
+		"claude",
+		"claude code",
+		"ai",
+		"agent",
+		"sessions",
+		"monitor"
+	],
+	"engines": {
+		"vscode": "^1.94.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"main": "./dist/extension.js",
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"contributes": {
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "claude-monitor",
+					"title": "Claude Control",
+					"icon": "media/icon.svg"
+				}
+			]
+		},
+		"views": {
+			"claude-monitor": [
+				{
+					"type": "webview",
+					"id": "claudeMonitor.sessions",
+					"name": "Conversations"
+				}
+			]
+		},
+		"commands": [
+			{
+				"command": "claudeMonitor.refresh",
+				"title": "Claude Control: Refresh",
+				"icon": "$(refresh)"
+			},
+			{
+				"command": "claudeMonitor.remoteControl.start",
+				"title": "Claude Control: Enable Remote Control",
+				"icon": {
+					"light": "media/rc-off.svg",
+					"dark": "media/rc-off.svg"
+				}
+			},
+			{
+				"command": "claudeMonitor.remoteControl.stop",
+				"title": "Claude Control: Disable Remote Control",
+				"icon": {
+					"light": "media/rc-on.svg",
+					"dark": "media/rc-on.svg"
+				}
+			},
+			{
+				"command": "claudeMonitor.remoteControl.why",
+				"title": "Claude Control: Remote Control Unavailable",
+				"icon": "$(circle-slash)"
+			},
+			{
+				"command": "claudeMonitor.enablePreciseStatus",
+				"title": "Claude Control: Enable Precise Status"
+			},
+			{
+				"command": "claudeMonitor.disablePreciseStatus",
+				"title": "Claude Control: Disable Precise Status"
+			},
+			{
+				"command": "claudeMonitor.showNeedsInput",
+				"title": "Claude Control: Show Conversations Waiting On Me"
+			},
+			{
+				"command": "claudeMonitor.openSession",
+				"title": "Claude Control: Open Conversation"
+			},
+			{
+				"command": "claudeMonitor.revealTranscript",
+				"title": "Claude Control: Reveal Transcript"
+			}
+		],
+		"menus": {
+			"view/title": [
+				{
+					"command": "claudeMonitor.remoteControl.start",
+					"when": "view == claudeMonitor.sessions && claudeMonitor.rc == off",
+					"group": "navigation@1"
+				},
+				{
+					"command": "claudeMonitor.remoteControl.stop",
+					"when": "view == claudeMonitor.sessions && claudeMonitor.rc == on",
+					"group": "navigation@1"
+				},
+				{
+					"command": "claudeMonitor.remoteControl.why",
+					"when": "view == claudeMonitor.sessions && claudeMonitor.rc == unavailable",
+					"group": "navigation@1"
+				},
+				{
+					"command": "claudeMonitor.refresh",
+					"when": "view == claudeMonitor.sessions",
+					"group": "navigation@2"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "claudeMonitor.openSession",
+					"when": "false"
+				},
+				{
+					"command": "claudeMonitor.revealTranscript",
+					"when": "false"
+				},
+				{
+					"command": "claudeMonitor.remoteControl.why",
+					"when": "false"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Claude Control",
+			"properties": {
+				"claudeMonitor.preciseStatus": {
+					"type": "boolean",
+					"default": false,
+					"description": "Use Claude Code hooks for exact status and a live permission-mode reading. Adds seven hook entries to ~/.claude/settings.json (backed up first, fully reversible). Without this, 'needs input' is inferred and marked uncertain."
+				},
+				"claudeMonitor.showClosed": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show conversations whose Claude process is no longer running."
+				},
+				"claudeMonitor.pinNeedsInput": {
+					"type": "boolean",
+					"default": true,
+					"description": "Pin conversations waiting on you to the top of the list."
+				},
+				"claudeMonitor.defaultProjectFilter": {
+					"type": "string",
+					"enum": [
+						"active",
+						"all"
+					],
+					"default": "active",
+					"description": "Which project the filter selects on load. 'active' preselects the project of the current workspace."
+				},
+				"claudeMonitor.groupByProject": {
+					"type": "boolean",
+					"default": false,
+					"description": "Group rows under project headings instead of a flat recency list."
+				},
+				"claudeMonitor.notifyOnNeedsInput": {
+					"type": "boolean",
+					"default": false,
+					"description": "Show a notification when a conversation starts waiting on you."
+				},
+				"claudeMonitor.promptPreviewLines": {
+					"type": "number",
+					"default": 2,
+					"minimum": 0,
+					"maximum": 6,
+					"description": "Lines of the latest prompt to show under each title. 0 hides the preview."
+				},
+				"claudeMonitor.tailBytes": {
+					"type": "number",
+					"default": 131072,
+					"minimum": 16384,
+					"description": "Bytes read from the end of each transcript. Larger is more robust on very chatty sessions, at some scan cost."
+				},
+				"claudeMonitor.staleToolSeconds": {
+					"type": "number",
+					"default": 90,
+					"minimum": 10,
+					"description": "A live session with an unanswered tool call and no transcript activity for this long is reported as probably waiting on input."
+				},
+				"claudeMonitor.claudePath": {
+					"type": "string",
+					"default": "",
+					"description": "Path to the claude executable. Empty auto-detects: the binary bundled with the Claude Code extension first, then ~/.claude/local, then PATH (last, because a PATH shim is often stale or broken)."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"build": "node esbuild.mjs",
+		"watch": "node esbuild.mjs --watch",
+		"typecheck": "tsc --noEmit",
+		"probe": "node esbuild.mjs --probe && node dist/probe.mjs",
+		"hooktest": "esbuild --bundle --platform=node --target=node20 --format=esm --log-level=error tools/hooktest.ts --outfile=dist/hooktest.mjs && node dist/hooktest.mjs",
+		"package": "vsce package --no-dependencies",
+		"statetest": "esbuild --bundle --platform=node --target=node20 --format=esm --log-level=error tools/statetest.ts --outfile=dist/statetest.mjs && node dist/statetest.mjs",
+		"paneltest": "esbuild --bundle --platform=node --target=node20 --format=esm --log-level=error tools/paneltest.ts --outfile=dist/paneltest.mjs && node dist/paneltest.mjs",
+		"test": "npm run statetest && npm run hooktest && npm run paneltest"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.0",
+		"@types/vscode": "^1.94.0",
+		"@vscode/vsce": "^3.9.2",
+		"esbuild": "^0.24.0",
+		"typescript": "^5.7.0"
+	}
+}

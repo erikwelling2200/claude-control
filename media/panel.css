@@ -1,0 +1,143 @@
+/* BASE: inherit the host theme, except the two brand colours below */
+* { box-sizing:border-box; }
+/* Column layout so the usage strip stays pinned while the list scrolls */
+html, body { height:100%; }
+body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var(--vscode-font-family); font-size:var(--vscode-font-size); color:var(--vscode-foreground); background:transparent; overflow:hidden; }
+.scroll { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; }
+
+/* BRAND */
+/* Orange is reserved for "needs you". Working is blue so attention is the only warm colour on screen. */
+:root { --cm-attention:#DE7552; --cm-working:#3794FF; --cm-done:#3FB950; --cm-remote:#3794FF; --cm-small:calc(var(--vscode-font-size) - 2px); }
+
+/* TOOLBAR: search, project filter, state chips */
+.toolbar { flex:none; z-index:2; padding:8px 8px 6px; background:var(--vscode-sideBar-background,var(--vscode-editor-background)); border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transparent); }
+.searchWrap { position:relative; display:flex; align-items:center; }
+.searchIcon { position:absolute; left:7px; opacity:.55; font-size:12px; pointer-events:none; }
+#search { width:100%; padding:4px 22px 4px 24px; color:var(--vscode-input-foreground); background:var(--vscode-input-background); border:1px solid var(--vscode-input-border,transparent); border-radius:3px; font-family:inherit; font-size:inherit; outline:none; }
+#search::placeholder { color:var(--vscode-input-placeholderForeground); }
+#search:focus { border-color:var(--vscode-focusBorder); }
+#search::-webkit-search-cancel-button { display:none; }
+.clear { position:absolute; right:3px; padding:2px 5px; color:var(--vscode-descriptionForeground); background:none; border:none; border-radius:3px; cursor:pointer; font-size:10px; line-height:1; }
+.clear:hover { color:var(--vscode-foreground); background:var(--vscode-toolbar-hoverBackground); }
+
+.row2 { display:flex; align-items:center; gap:6px; margin-top:6px; }
+#project { flex:1; min-width:0; padding:3px 4px; color:#FFFFFF; background:#444444; border:1px solid #555555; border-radius:3px; font-family:inherit; font-size:var(--cm-small); outline:none; }
+#project option { color:#FFFFFF; background:#444444; }
+#project:focus { border-color:var(--vscode-focusBorder); }
+.count { flex:none; color:var(--vscode-descriptionForeground); font-size:var(--cm-small); white-space:nowrap; }
+
+.chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.chip { padding:2px 8px; color:var(--vscode-descriptionForeground); background:var(--vscode-badge-background); border:1px solid transparent; border-radius:10px; cursor:pointer; font-family:inherit; font-size:var(--cm-small); white-space:nowrap; }
+.chip:hover { color:var(--vscode-foreground); }
+.chip[aria-selected="true"] { color:var(--vscode-badge-foreground); border-color:var(--vscode-focusBorder); }
+.chip.warn[aria-selected="true"] { border-color:var(--cm-attention); }
+
+/* HINT: waiting-elsewhere notice and the precise-status nudge */
+.hint { flex:none; margin:8px; padding:7px 9px; color:var(--vscode-foreground); background:var(--vscode-textBlockQuote-background); border-left:2px solid var(--cm-attention); border-radius:2px; font-size:var(--cm-small); line-height:1.45; }
+.hint button { margin-top:6px; padding:3px 9px; color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:none; border-radius:2px; cursor:pointer; font-family:inherit; font-size:inherit; }
+.hint button:hover { background:var(--vscode-button-hoverBackground); }
+.hint a { color:var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
+
+/* GROUPS */
+.groupHead { padding:10px 10px 4px; color:var(--vscode-descriptionForeground); font-size:var(--cm-small); font-weight:600; letter-spacing:.4px; text-transform:uppercase; }
+
+/* ROWS */
+.list { padding:2px 0 10px; }
+.row { position:relative; display:flex; gap:9px; padding:8px 10px 9px; cursor:pointer; }
+.row:hover { background:var(--vscode-list-hoverBackground); }
+.row:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:-1px; }
+.row.tintAttention { background:rgba(222,117,82,.13); }
+.row.tintAttention:hover { background:rgba(222,117,82,.2); }
+.row.tintDone { background:rgba(63,185,80,.11); }
+.row.tintDone:hover { background:rgba(63,185,80,.18); }
+.row.dim { opacity:.6; }
+.row.dim:hover { opacity:1; }
+
+/* GUTTER: status icon, age, permission mode, remote-control toggle, model */
+.gutter { flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; width:34px; padding-top:1px; }
+.time { color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 3px); line-height:1; white-space:nowrap; }
+.perm { display:flex; align-items:center; justify-content:center; width:26px; height:26px; color:var(--vscode-descriptionForeground); opacity:.85; }
+.perm[hidden] { display:none; }		/* the flex display above would otherwise defeat the hidden attribute */
+.perm svg { width:100%; height:100%; display:block; }
+.perm.danger { color:var(--vscode-charts-red,#F14C4C); opacity:1; }
+.perm.unsure { opacity:.4; }		/* the reading predates this turn, so do not assert it */
+.row:hover .perm.unsure { opacity:.8; }
+.model { color:var(--vscode-descriptionForeground); font-size:8px; font-weight:700; letter-spacing:.3px; line-height:1; opacity:.75; white-space:nowrap; }
+
+/* STATUS ICONS */
+.icon { display:flex; align-items:center; justify-content:center; width:14px; height:14px; }
+.icon svg { width:100%; height:100%; display:block; }
+.icon.working { width:12px; height:12px; border:2px solid rgba(55,148,255,.3); border-top-color:var(--cm-working); border-radius:50%; animation:spin .8s linear infinite; }
+.icon.hand { color:var(--cm-attention); }
+.icon.hand.uncertain { opacity:.55; }
+.icon.check { color:var(--cm-done); }
+.icon.check.seen { color:var(--vscode-descriptionForeground); }
+.icon.bullet { width:14px; height:14px; position:relative; }
+.icon.bullet::after { content:""; width:7px; height:7px; border-radius:50%; background:var(--vscode-descriptionForeground); opacity:.65; }
+.icon.bullet.error::after { background:var(--vscode-charts-red,#F14C4C); opacity:1; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* REMOTE CONTROL PER ROW */
+.remote { display:flex; align-items:center; justify-content:center; width:18px; height:16px; margin-top:1px; padding:0; color:var(--vscode-descriptionForeground); background:none; border:none; border-radius:3px; cursor:pointer; opacity:.5; }
+.remote[hidden] { display:none; }		/* the flex display above would otherwise defeat the hidden attribute */
+.remote svg { width:14px; height:14px; display:block; }
+.row:hover .remote { opacity:.85; }
+.remote:hover { color:var(--vscode-foreground); background:var(--vscode-toolbar-hoverBackground); opacity:1; }
+.remote.on, .row:hover .remote.on { color:var(--cm-remote); opacity:1; }
+
+/* BODY */
+.body { flex:1; min-width:0; }
+.title { font-weight:600; line-height:1.35; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.activity { margin-top:1px; font-size:var(--cm-small); font-weight:600; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.activity.working { color:var(--cm-working); }
+.activity.attention { color:var(--cm-attention); }
+.activity.done { color:var(--cm-done); }
+.activity.error { color:var(--vscode-charts-red,#F14C4C); }
+.activity.muted { color:var(--vscode-descriptionForeground); }
+.prompt { margin-top:3px; color:var(--vscode-descriptionForeground); font-size:var(--cm-small); line-height:1.4; display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; }
+.prompt .pend { font-weight:700; }
+.meta { margin-top:3px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 3px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.meta .proj { color:var(--vscode-foreground); font-weight:700; }
+.hit { color:var(--vscode-list-highlightForeground,var(--vscode-textLink-foreground)); font-weight:700; }
+
+/* CHANGED-FILE CHIPS */
+.files { display:flex; flex-wrap:wrap; align-items:center; gap:3px; margin-top:5px; }
+.filesLabel { color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 4px); font-weight:700; letter-spacing:.4px; }
+.chipFile { max-width:100%; padding:1px 6px; color:var(--vscode-descriptionForeground); background:transparent; border:1px solid rgba(128,128,128,.35); border-radius:9px; cursor:pointer; font-family:inherit; font-size:calc(var(--vscode-font-size) - 3px); line-height:1.5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chipFile:hover { color:var(--vscode-foreground); background:var(--vscode-toolbar-hoverBackground); border-color:var(--vscode-focusBorder); }
+.filesMore { align-self:center; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 3px); }
+
+/* ROW MENU */
+.kebab { flex:none; align-self:flex-start; margin-top:1px; padding:1px 5px; color:var(--vscode-descriptionForeground); background:none; border:none; border-radius:3px; cursor:pointer; font-size:13px; line-height:1.2; opacity:0; }
+.row:hover .kebab, .kebab:focus-visible { opacity:1; }
+.kebab:hover { color:var(--vscode-foreground); background:var(--vscode-toolbar-hoverBackground); }
+.menu { position:absolute; right:8px; z-index:5; min-width:170px; padding:3px; background:var(--vscode-menu-background,var(--vscode-editorWidget-background)); border:1px solid var(--vscode-menu-border,var(--vscode-editorWidget-border)); border-radius:4px; box-shadow:0 3px 10px rgba(0,0,0,.35); }
+.menu button { display:block; width:100%; padding:4px 8px; color:var(--vscode-menu-foreground,var(--vscode-foreground)); background:none; border:none; border-radius:2px; cursor:pointer; font-family:inherit; font-size:var(--cm-small); text-align:left; }
+.menu button:hover { color:var(--vscode-menu-selectionForeground,var(--vscode-list-activeSelectionForeground)); background:var(--vscode-menu-selectionBackground,var(--vscode-list-activeSelectionBackground)); }
+
+/* EMPTY */
+.empty { padding:18px 12px; color:var(--vscode-descriptionForeground); font-size:var(--cm-small); line-height:1.5; text-align:center; }
+.empty button { margin-top:8px; padding:3px 9px; color:var(--vscode-button-secondaryForeground,var(--vscode-button-foreground)); background:var(--vscode-button-secondaryBackground,var(--vscode-button-background)); border:none; border-radius:2px; cursor:pointer; font-family:inherit; font-size:inherit; }
+
+/* USAGE LIMITS: pinned footer, three mini bars */
+.usage { flex:none; display:block; width:100%; padding:7px 9px 8px; color:inherit; background:var(--vscode-sideBar-background,var(--vscode-editor-background)); border:none; border-top:1px solid var(--vscode-sideBarSectionHeader-border,rgba(128,128,128,.25)); cursor:pointer; font-family:inherit; text-align:left; }
+.usage:hover { background:var(--vscode-list-hoverBackground); }
+.usage[hidden] { display:none; }
+.usage.stale { opacity:.55; }
+.usage.stale:hover { opacity:1; }
+.bar { display:flex; align-items:center; gap:6px; margin-top:3px; }
+.bar:first-child { margin-top:0; }
+.bar .lbl { flex:none; width:44px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 4px); letter-spacing:.2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bar .track { flex:1 1 auto; display:block; height:5px; background:var(--vscode-scrollbarSlider-background,rgba(128,128,128,.25)); border-radius:3px; overflow:hidden; }
+.bar .fill { display:block; width:0; height:100%; border-radius:3px; background:var(--vscode-progressBar-background,var(--vscode-focusBorder)); }		/* a span defaults to inline, which silently ignores width and height; the width itself is set via the CSSOM */
+.bar .fill.warning { background:var(--cm-attention); }
+.bar .fill.critical { background:var(--vscode-charts-red,#F14C4C); }
+.bar .pct { flex:none; width:26px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 4px); text-align:right; }
+.bar.active .lbl, .bar.active .pct { color:var(--vscode-foreground); font-weight:700; }
+.usage .asOf { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:4px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 4px); }
+.usage .asOf .resets { flex:none; font-weight:700; white-space:nowrap; }
+
+/* MOTION: the spinner is the only animation, and it is decorative */
+@media (prefers-reduced-motion:reduce) {
+	.icon.working { animation:none; }
+}
