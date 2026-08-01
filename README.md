@@ -1,6 +1,6 @@
 # Claude Control
 
-<img src="media/screenshot.png" alt="Claude Control sidebar screenshot" align="right" width="300">
+<img src="https://raw.githubusercontent.com/cronoklee/claude-control/main/media/screenshot.png" alt="Claude Control sidebar screenshot" align="right" width="300">
 
 The missing UI for Claude Code Extension. See every Claude Code conversation on your machine in one sidebar - which are working, which are waiting on you, and which are done.
 

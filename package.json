@@ -1,6 +1,6 @@
 {
-	"name": "claude-control",
-	"displayName": "Claude Control",
+	"name": "claude-control-pane",
+	"displayName": "Claude Control Pane",
 	"description": "Overview of every Claude Code conversation on this machine, newest first, with live busy / needs-input / finished indicators.",
 	"version": "0.1.0",
 	"publisher": "cronoklee",
