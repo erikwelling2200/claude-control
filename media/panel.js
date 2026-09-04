@@ -164,6 +164,8 @@ function renderHints(scoped) {
 }
 
 const STALE_USAGE_MS = 900000
+const SESSION_WINDOW_MS = 18000000
+const WEEKLY_WINDOW_MS = 604800000
 
 /* Claude's plan limits, pinned to the bottom. It only refreshes this cache when something asks it to, so the age is shown rather than implied. */
 function renderUsage() {
@@ -171,7 +173,7 @@ function renderUsage() {
 	el.usage.hidden = usage.limits.length === 0
 	if (el.usage.hidden) return
 	const stale = !usage.fetchedAt || Date.now() - usage.fetchedAt > STALE_USAGE_MS
-	const rows = usage.limits.map((limit) => `<div class="bar${limit.active ? " active" : ""}" title="${escape(barTooltip(limit))}"><span class="lbl">${escape(limit.label)}</span><span class="track"><span class="fill ${limit.severity}" data-pct="${limit.percent}"></span></span><span class="pct">${limit.percent}%</span></div>`)
+	const rows = usage.limits.map((limit) => `<div class="bar${limit.active ? " active" : ""}" title="${escape(barTooltip(limit))}"><span class="lbl">${escape(limit.label)}</span><span class="track"><span class="pace" data-pct="${windowElapsed(limit)}"></span><span class="fill ${limit.severity}" data-pct="${limit.percent}"></span></span><span class="pct">${limit.percent}%</span></div>`)
 	const asOf = usage.fetchedAt ? `as of ${age(Date.now() - usage.fetchedAt)} ago${stale ? " — click to refresh" : ""}` : "no reading yet — click to refresh"
 	const markup = `${rows.join("")}<div class="asOf"><span>${escape(asOf)}</span><span class="resets">${escape(resetLabel(usage.limits))}</span></div>`
 	setClass(el.usage, `usage${stale ? " stale" : ""}`)
@@ -180,34 +182,46 @@ function renderUsage() {
 	el.usage.innerHTML = markup
 	/* Widths are applied through the CSSOM, not a style attribute: the webview CSP has no 'unsafe-inline',
 	   so an inline style is dropped and the fill silently renders at its default width. */
-	for (const fill of el.usage.querySelectorAll(".fill")) fill.style.width = `${fill.dataset.pct}%`
+	for (const zone of el.usage.querySelectorAll(".fill, .pace")) zone.style.width = `${zone.dataset.pct}%`
+}
+
+/* A percentage on its own does not say whether you are ahead or behind: 15% used is comfortable 40% into
+   a window and alarming 5% into one. The middle zone marks how far through the window the reading sits, so
+   the fill running short of it means spending below pace. */
+function windowElapsed(limit) {
+	if (!limit.resetsAt) return 0
+	const span = limit.kind === "session" ? SESSION_WINDOW_MS : WEEKLY_WINDOW_MS
+	return clampPercent(100 * (span - (limit.resetsAt - Date.now())) / span)
+}
+
+function clampPercent(value) {
+	return Math.max(0, Math.min(100, Math.round(value)))
 }
 
 /* The reset that matters is the one currently constraining you, falling back to the longest-dated limit. */
 function resetLabel(limits) {
 	const pick = limits.find((limit) => limit.active && limit.resetsAt) || limits.filter((limit) => limit.resetsAt).sort((a, b) => b.resetsAt - a.resetsAt)[0]
 	if (!pick) return ""
-	const when = new Date(Math.round(pick.resetsAt / 60000) * 60000)		// Claude reports 01:59:59, which reads as 2am
-	const hours = when.getHours()
-	const suffix = hours < 12 ? "am" : "pm"
-	const hour12 = hours % 12 === 0 ? 12 : hours % 12
-	const minutes = when.getMinutes()
-	const clock = `${hour12}${minutes ? `:${String(minutes).padStart(2, "0")}` : ""}${suffix}`
-	return `Resets ${clock} ${dayLabel(when)}`
+	return `Resets in ${until(pick.resetsAt - Date.now())}`
 }
 
-function dayLabel(when) {
-	const midnight = new Date()
-	midnight.setHours(0, 0, 0, 0)
-	const days = Math.floor((when - midnight) / 86400000)
-	if (days <= 0) return "today"
-	if (days === 1) return "tomorrow"
-	return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][when.getDay()]
+/* Two components, because one is too coarse for a reset you are pacing against: "2h" hides the
+   difference between 1h31m and 2h29m. age() stays single-unit — it dates past activity, where that
+   precision would only add noise. */
+function until(ms) {
+	const minutes = Math.max(0, Math.round(ms / 60000))
+	if (minutes < 1) return "under a minute"
+	if (minutes < 60) return `${minutes}m`
+	const hours = Math.floor(minutes / 60)
+	if (hours < 24) return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`
+	const days = Math.floor(hours / 24)
+	return `${days}d${hours % 24 ? ` ${hours % 24}h` : ""}`
 }
 
 function barTooltip(limit) {
-	const reset = limit.resetsAt ? ` · resets in ${age(limit.resetsAt - Date.now())}` : ""
-	return `${limit.label}: ${limit.percent}% used${limit.active ? " (currently limiting)" : ""}${reset}`
+	const reset = limit.resetsAt ? ` · resets in ${until(limit.resetsAt - Date.now())}` : ""
+	const elapsed = limit.resetsAt ? ` · ${windowElapsed(limit)}% of the window elapsed` : ""
+	return `${limit.label}: ${limit.percent}% used${limit.active ? " (currently limiting)" : ""}${elapsed}${reset}`
 }
 
 function renderEmpty(scopedCount) {

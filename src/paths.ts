@@ -33,12 +33,25 @@ export function slugify(dir: string): string {
 	return dir.replace(/[^a-zA-Z0-9]/g, "-")
 }
 
-/* Canonical form for comparing two paths that may differ by symlink or unicode composition. */
+const canonicalCache = new Map<string, string>()
+
+/* The identity of a folder, so two spellings of one directory compare equal. On Windows that is the whole
+   problem: a session started from the terminal records C:\x, one started by the IDE records c:\x, and
+   plain realpathSync hands back whatever case it was given. realpathSync.native asks the filesystem for
+   the real name instead, which is the same string for every spelling. Cached because this runs per row on
+   every rebuild, and it is a syscall. */
 export function canonical(p: string): string {
 	if (!p) return ""
+	const hit = canonicalCache.get(p)
+	if (hit) return hit
 	let resolved = p
-	try { resolved = fs.realpathSync(p) } catch { /* path may be gone; compare the literal */ }
-	return resolved.normalize("NFC").replace(/[/\\]+$/, "")
+	try { resolved = fs.realpathSync.native(p) } catch {
+		try { resolved = fs.realpathSync(p) } catch { /* path may be gone; compare the literal */ }
+	}
+	const result = resolved.normalize("NFC").replace(/[/\\]+$/, "")
+	/* A path that does not exist yet resolves to itself — not something to remember, since it may appear. */
+	if (resolved !== p) canonicalCache.set(p, result)
+	return result
 }
 
 export function samePath(a: string, b: string): boolean { return canonical(a) === canonical(b) }
@@ -56,13 +69,13 @@ let cachedExecutable: string | undefined
 export function findClaudeExecutable(override?: string): string {
 	if (override && isExecutableFile(override)) return override
 	if (cachedExecutable !== undefined) return cachedExecutable
-	const candidates = [findBundledExecutable(), path.join(claudeRoot(), "local", "claude"), ...pathCandidates()]
+	const candidates = [findBundledExecutable(), ...executableNames("claude").map((name) => path.join(claudeRoot(), "local", name)), ...pathCandidates()]
 	cachedExecutable = candidates.find((candidate) => candidate && isExecutableFile(candidate)) || ""
 	return cachedExecutable
 }
 
 function pathCandidates(): string[] {
-	return (process.env.PATH || "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, "claude"))
+	return (process.env.PATH || "").split(path.delimiter).filter(Boolean).flatMap((dir) => executableNames("claude").map((name) => path.join(dir, name)))
 }
 
 /* Newest native-binary copy shipped inside an installed Claude Code IDE extension. */
@@ -76,8 +89,10 @@ function findBundledExecutable(): string {
 		try { entries = fs.readdirSync(extRoot) } catch { continue }
 		for (const entry of entries) {
 			if (!entry.startsWith("anthropic.claude-code-")) continue
-			const candidate = path.join(extRoot, entry, "resources", "native-binary", "claude")
-			if (isExecutableFile(candidate)) found.push(candidate)
+			for (const name of executableNames("claude")) {
+				const candidate = path.join(extRoot, entry, "resources", "native-binary", name)
+				if (isExecutableFile(candidate)) { found.push(candidate); break }
+			}
 		}
 	}
 	found.sort()
@@ -87,6 +102,13 @@ function findBundledExecutable(): string {
 function isExecutableFile(p: string): boolean {
 	try {
 		const stat = fs.statSync(p)		// statSync follows symlinks, so a dangling shim is rejected here
-		return stat.isFile() && (stat.mode & 0o111) !== 0
+		if (!stat.isFile()) return false
+		if (process.platform === "win32") return true		// NTFS carries no execute bit, so every file would be rejected
+		return (stat.mode & 0o111) !== 0
 	} catch { return false }
+}
+
+/* Windows launchers carry an extension; .exe first because execFile() cannot run a .cmd without a shell. */
+function executableNames(base: string): string[] {
+	return process.platform === "win32" ? [base + ".exe", base, base + ".cmd", base + ".bat"] : [base]
 }

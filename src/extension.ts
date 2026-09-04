@@ -222,12 +222,76 @@ async function refreshUsage(showReport: boolean): Promise<void> {
 }
 
 function runUsage(executable: string, sessionId: string): Promise<string> {
+	const script = findUsageScript()
+	/* Preferred: a direct fetch of /api/oauth/usage. Seconds instead of ~25s, spends no tokens, and it
+	   actually updates a file the panel reads — `claude -p /usage` cannot, because a slash command in
+	   print mode is just a prompt and the usage cache is only written by an interactive session. */
+	if (script) return new Promise((resolve, reject) => {
+		const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" }		// process.execPath is Code itself; this makes it behave as plain node
+		execFile(process.execPath, [script, "--force"], { cwd: os.homedir(), env, timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+			if (err && !stdout) reject(err)
+			else resolve(String(stdout || ""))
+		})
+	})
 	return new Promise((resolve, reject) => {
 		execFile(executable, ["-p", USAGE_COMMAND, "--session-id", sessionId], { cwd: os.homedir(), timeout: 90000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
 			if (err && !stdout) reject(err)
 			else resolve(String(stdout || ""))
 		})
 	})
+}
+
+let cachedUsageScript: string | undefined
+
+/* The session-usage skill, installed personally or carried by a plugin. The plugin's own version is never
+   pinned here: it is read from Claude Code's install manifest, and the cache scan is only the fallback. */
+function findUsageScript(): string {
+	/* Re-resolve a vanished hit instead of trusting the cache forever: a plugin update replaces its version
+	   directory, so a path resolved earlier in this window can point at a version that no longer exists. */
+	if (cachedUsageScript && fs.existsSync(cachedUsageScript)) return cachedUsageScript
+	const tail = path.join("skills", "session-usage", "scripts", "usage.js")
+	const personal = path.join(claudeRoot(), tail)
+	if (fs.existsSync(personal)) return cachedUsageScript = personal
+	for (const installPath of installedPluginPaths()) {
+		const candidate = path.join(installPath, tail)
+		if (fs.existsSync(candidate)) return cachedUsageScript = candidate
+	}
+	const found: { candidate: string, version: string }[] = []
+	const cacheRoot = path.join(claudeRoot(), "plugins", "cache")
+	const dirs = (dir: string): string[] => {
+		try { return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(dir, e.name)) } catch { return [] }
+	}
+	for (const owner of dirs(cacheRoot)) {
+		for (const plugin of dirs(owner)) {
+			for (const version of dirs(plugin)) {
+				const candidate = path.join(version, tail)
+				if (fs.existsSync(candidate)) found.push({ candidate, version: path.basename(version) })
+			}
+		}
+	}
+	found.sort((left, right) => compareVersions(left.version, right.version))
+	return cachedUsageScript = found.length ? found[found.length - 1].candidate : ""
+}
+
+/* installPath per installed plugin, newest-installed manifest order preserved. Missing or unreadable
+   manifest just means the cache scan below decides instead. */
+function installedPluginPaths(): string[] {
+	try {
+		const manifest = JSON.parse(fs.readFileSync(path.join(claudeRoot(), "plugins", "installed_plugins.json"), "utf8"))
+		const entries: any[] = Object.values(manifest && manifest.plugins ? manifest.plugins : {})
+		return entries.flat().map((entry) => entry && entry.installPath).filter((installPath) => typeof installPath === "string" && installPath)
+	} catch { return [] }
+}
+
+/* Segment-wise numeric compare — a plain string sort puts 0.10.0 before 0.2.0. */
+function compareVersions(left: string, right: string): number {
+	const parts = (value: string) => String(value).split(".").map((part) => parseInt(part, 10) || 0)
+	const a = parts(left), b = parts(right)
+	for (let index = 0; index < Math.max(a.length, b.length); index++) {
+		const diff = (a[index] || 0) - (b[index] || 0)
+		if (diff) return diff
+	}
+	return String(right).length - String(left).length
 }
 
 /* There is no way to open Claude's usage dialog from outside — it is a CLI component — so its own report text is shown verbatim instead. */

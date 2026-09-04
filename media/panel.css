@@ -7,7 +7,7 @@ body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var
 
 /* BRAND */
 /* Orange is reserved for "needs you". Working is blue so attention is the only warm colour on screen. */
-:root { --cm-attention:#DE7552; --cm-working:#3794FF; --cm-done:#3FB950; --cm-remote:#3794FF; --cm-small:calc(var(--vscode-font-size) - 2px); }
+:root { --cm-track-empty:rgba(0,0,0,.45); --cm-track-pace:var(--vscode-scrollbarSlider-background,rgba(128,128,128,.25)); --cm-attention:#DE7552; --cm-working:#3794FF; --cm-done:#3FB950; --cm-remote:#3794FF; --cm-small:calc(var(--vscode-font-size) - 2px); }
 
 /* TOOLBAR: search, project filter, state chips */
 .toolbar { flex:none; z-index:2; padding:8px 8px 6px; background:var(--vscode-sideBar-background,var(--vscode-editor-background)); border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transparent); }
@@ -128,8 +128,10 @@ body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var
 .bar { display:flex; align-items:center; gap:6px; margin-top:3px; }
 .bar:first-child { margin-top:0; }
 .bar .lbl { flex:none; width:44px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 4px); letter-spacing:.2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.bar .track { flex:1 1 auto; display:block; height:5px; background:var(--vscode-scrollbarSlider-background,rgba(128,128,128,.25)); border-radius:3px; overflow:hidden; }
-.bar .fill { display:block; width:0; height:100%; border-radius:3px; background:var(--vscode-progressBar-background,var(--vscode-focusBorder)); }		/* a span defaults to inline, which silently ignores width and height; the width itself is set via the CSSOM */
+body.vscode-light { --cm-track-empty:rgba(0,0,0,.18); }
+.bar .track { flex:1 1 auto; position:relative; display:block; height:5px; background:var(--cm-track-empty); border-radius:3px; overflow:hidden; }
+.bar .pace { position:absolute; left:0; top:0; width:0; height:100%; background:var(--cm-track-pace); border-radius:3px; }		/* how far through the window the reading sits — width set via the CSSOM, like the fill */
+.bar .fill { position:absolute; left:0; top:0; display:block; width:0; height:100%; border-radius:3px; background:var(--vscode-progressBar-background,var(--vscode-focusBorder)); }		/* a span defaults to inline, which silently ignores width and height; the width itself is set via the CSSOM */
 .bar .fill.warning { background:var(--cm-attention); }
 .bar .fill.critical { background:var(--vscode-charts-red,#F14C4C); }
 .bar .pct { flex:none; width:26px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 4px); text-align:right; }

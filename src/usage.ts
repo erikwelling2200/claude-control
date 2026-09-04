@@ -1,4 +1,6 @@
 import * as fs from "fs"
+import * as path from "path"
+import { claudeRoot } from "./paths"
 import { configFile } from "./trust"
 import type { UsageLimit, UsageSnapshot } from "./types"
 
@@ -11,8 +13,21 @@ const EMPTY: UsageSnapshot = { limits: [], fetchedAt: 0 }
 let cache: UsageSnapshot = EMPTY
 let cachedMtime = -1
 
-/* Re-parse only when the config file has actually changed: it is ~40 KB and this is called on every tick. */
+let scriptCache: UsageSnapshot = EMPTY
+let scriptCachedMtime = -1
+
+/* Two sources. The CLI writes cachedUsageUtilization into ~/.claude.json, but only from an interactive
+   session — a headless `claude -p /usage` never moves it, so that source can be hours old. The
+   session-usage skill fetches /api/oauth/usage itself and lands the body in ~/.claude/usage-cache.json.
+   Whichever was fetched last is the current reading. */
 export function readUsage(): UsageSnapshot {
+	const fromConfig = readConfigUsage()
+	const fromScript = readScriptUsage()
+	return fromScript.fetchedAt > fromConfig.fetchedAt ? fromScript : fromConfig
+}
+
+/* Re-parse only when the config file has actually changed: it is ~40 KB and this is called on every tick. */
+function readConfigUsage(): UsageSnapshot {
 	const file = configFile()
 	let mtimeMs: number
 	try { mtimeMs = fs.statSync(file).mtimeMs } catch { return EMPTY }
@@ -20,6 +35,57 @@ export function readUsage(): UsageSnapshot {
 	cachedMtime = mtimeMs
 	cache = parseUsage(file)
 	return cache
+}
+
+/* Where the session-usage skill parks its own reading of /api/oauth/usage. */
+function usageCacheFile(): string {
+	return path.join(claudeRoot(), "usage-cache.json")
+}
+
+function readScriptUsage(): UsageSnapshot {
+	const file = usageCacheFile()
+	let mtimeMs: number
+	try { mtimeMs = fs.statSync(file).mtimeMs } catch { return EMPTY }
+	if (mtimeMs === scriptCachedMtime) return scriptCache
+	scriptCachedMtime = mtimeMs
+	scriptCache = parseUsageCache(file)
+	return scriptCache
+}
+
+/* Only the windows worth a bar. The endpoint also returns internal codenames whose meaning is not
+   stable enough to label, and nulls for every window the plan does not have. */
+const USAGE_WINDOWS: { key: string, kind: string, label: string, always?: boolean }[] = [
+	{ key: "five_hour", kind: "session", label: "Session", always: true },
+	{ key: "seven_day", kind: "weekly_all", label: "Week", always: true },
+	{ key: "seven_day_opus", kind: "weekly_opus", label: "Opus" },
+	{ key: "seven_day_sonnet", kind: "weekly_sonnet", label: "Sonnet" }
+]
+
+/* The endpoint keys each window by name; the config file stores an array of limits. Same numbers, so
+   this converts into the shape the panel already renders. */
+function parseUsageCache(file: string): UsageSnapshot {
+	let entry: any
+	try { entry = JSON.parse(fs.readFileSync(file, "utf8")) } catch { return EMPTY }
+	const body = entry?.body
+	if (!body) return EMPTY
+	const limits: UsageLimit[] = []
+	for (const window of USAGE_WINDOWS) {
+		const raw = body[window.key]
+		const percent = Number(raw?.utilization)
+		if (!Number.isFinite(percent)) continue
+		const rounded = Math.max(0, Math.min(100, Math.round(percent)))
+		if (!window.always && rounded === 0) continue		// a plan without this cap reads as a flat zero
+		limits.push({
+			kind: window.kind,
+			label: window.label,
+			percent: rounded,
+			severity: severityFor({}, rounded),
+			resetsAt: Date.parse(raw?.resets_at || "") || 0,
+			active: rounded > 0
+		})
+	}
+	if (!limits.length) return EMPTY
+	return { limits, fetchedAt: Number(entry?.fetchedAt || 0) }
 }
 
 function parseUsage(file: string): UsageSnapshot {

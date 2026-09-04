@@ -240,6 +240,7 @@ export class Monitor {
 			if (!record.sessionId || this.excluded.has(record.sessionId)) continue
 			const live = this.live.get(record.sessionId)
 			const signal = this.signals.get(record.sessionId)
+			const cwd = canonical(record.cwd)		// one spelling per folder, so the project filter and the bridge lookup agree
 			let state = resolveState({
 				record,
 				live,
@@ -253,7 +254,7 @@ export class Monitor {
 				sessionId: record.sessionId,
 				title: record.title,
 				lastPrompt: record.lastPrompt,
-				cwd: record.cwd,
+				cwd,
 				projectName: record.projectName || projectName(record.cwd),
 				gitBranch: record.gitBranch,
 				state,
@@ -263,7 +264,7 @@ export class Monitor {
 				pid: live?.pid || 0,
 				file: record.file,
 				errorMessage: record.errorMessage,
-				remoteActive: ownsBridge(bridges.get(canonical(record.cwd)), record.sessionId),
+				remoteActive: ownsBridge(bridges.get(cwd), record.sessionId),
 				planFile: record.planFile,
 				permissionMode: signal?.permissionMode || record.permissionMode,
 				/* permissionMode is stamped on the prompt record itself, so it only ever describes the mode as of some past prompt — flipping the picker mid-session is recorded nowhere. Anything a hook has not confirmed is therefore shown as "last known", never asserted. */
