@@ -9,7 +9,7 @@ If you run more than one Claude session at a time, you know the problem: a sessi
 ## What you get
 
 - **Live status at a glance** — a blue spinner while Claude works, an orange hand when it needs you, a green tick when it finishes.
-- **Every project, one list** — sorted by recency, filtered to the folder you're in by default. The count of conversations waiting on you always shows, even when the filter hides them.
+- **Every workspace, one list** — grouped into a foldout per folder, most recent first, with the folder this window has open at the top. The count of conversations waiting on you always shows, even when a search hides them.
 - **Search** across titles, prompts, branches.
 - **Click to jump straight in** — opens or reveals that conversation in the Claude Code panel. If it's waiting on a plan, the plan opens alongside it.
 - **Changed files as chips** when a run finishes — click one for a diff of what that run actually did.
@@ -42,10 +42,8 @@ You'll be offered this on first run. Declining is fine — everything else works
 | Setting | Default | |
 |---|---|---|
 | `preciseStatus` | `false` | Use hooks for exact status |
-| `showClosed` | `true` | Include conversations with no running process |
+| `showClosed` | `false` | Keep listing conversations with no process and no chat tab anywhere |
 | `pinNeedsInput` | `true` | Float waiting conversations to the top |
-| `defaultProjectFilter` | `active` | `active` or `all` |
-| `groupByProject` | `false` | Group under project headings |
 | `notifyOnNeedsInput` | `false` | Notify when a conversation starts waiting |
 | `promptPreviewLines` | `2` | Lines of the latest prompt per row |
 | `tailBytes` | `131072` | Bytes read from each transcript |

@@ -11,7 +11,7 @@ import { claudeRoot, spoolDir } from "../src/paths"
 import { scanOne } from "../src/scanner"
 import { configFile, trustState } from "../src/trust"
 import { readUsage } from "../src/usage"
-import { Monitor, type MonitorConfig } from "../src/watcher"
+import { listTranscripts, Monitor, type MonitorConfig } from "../src/watcher"
 import type { PanelData } from "../src/types"
 
 // --- SETUP ---
@@ -22,7 +22,6 @@ const CONFIG: MonitorConfig = {
 	preciseStatus: false,
 	showClosed: true,
 	pinNeedsInput: true,
-	groupByProject: false,
 	promptPreviewLines: 2,
 	claudePath: ""
 }
@@ -71,16 +70,16 @@ async function main(): Promise<void> {
 
 	console.log("")
 	check("rows produced", latest.rows.length > 0, `${latest.rows.length} rows`)
-	check("projects produced", latest.projects.length > 0, latest.projects.map((p) => `${p.name}(${p.count})`).join(" "))
-	check("no two projects share a label", new Set(latest.projects.map((p) => p.name)).size === latest.projects.length)
+	check("workspaces produced", latest.workspaces.length > 0, latest.workspaces.map((w) => `${w.name}(${w.count})`).join(" "))
+	check("no two workspaces share a label", new Set(latest.workspaces.map((w) => w.name)).size === latest.workspaces.length)
 	check("active cwd resolved", !!latest.activeCwd, latest.activeCwd)
 	const activeHasSessions = latest.rows.some((row) => row.cwd === latest!.activeCwd)
-	check("active cwd is offered as a project when it has sessions", !activeHasSessions || latest.projects.some((p) => p.cwd === latest!.activeCwd), activeHasSessions ? "" : "active folder has no sessions — host falls back to all projects")
+	check("active cwd is one of the workspaces when it has sessions", !activeHasSessions || latest.workspaces.some((w) => w.cwd === latest!.activeCwd), activeHasSessions ? "" : "active folder has no sessions")
 	check("every row has a title", latest.rows.every((row) => !!row.title))
 	check("every row has a project name", latest.rows.every((row) => !!row.projectName), latest.rows.filter((r) => !r.projectName).map((r) => r.sessionId).join(","))
 	check("rows sorted newest first (within pin groups)", sortedWithinPins(latest.rows))
 	check("live rows carry a pid", latest.rows.filter((row) => row.live).every((row) => row.pid > 0))
-	check("closed rows are not live", latest.rows.filter((row) => row.state === "closed").every((row) => !row.live))
+	check("killed rows are not live", latest.rows.filter((row) => row.state === "killed").every((row) => !row.live))
 
 	const live = latest.rows.filter((row) => row.live)
 	console.log(`\nlive rows ${live.length}:`)
@@ -151,8 +150,12 @@ async function main(): Promise<void> {
 	console.log(`\nliveness: registry ${registry.size}, argv ${procs.size}, rows live ${live.length}`)
 	for (const [id, session] of procs) console.log(`  argv  ${id.slice(0, 8)}  pid ${session.pid}  ${session.cwd.slice(-38)}`)
 	check("argv scan recovers a full session id per resumed process", [...procs.keys()].every((id) => id.length > 8))
-	check("every registry session is reported live", [...registry.keys()].every((id) => live.some((row) => row.sessionId === id)))
-	check("every argv session is reported live", [...procs.keys()].every((id) => live.some((row) => row.sessionId === id)))
+	/* Rows are built from transcripts, so a chat opened and never prompted has no row to be live in. That
+	   is by design, not a liveness failure, so those are excluded rather than left to fail at random. */
+	const onDisk = new Set(listTranscripts().map((file) => path.basename(file, ".jsonl")))
+	const transcribed = (ids: string[]) => ids.filter((id) => onDisk.has(id))
+	check("every registry session with a transcript is reported live", transcribed([...registry.keys()]).every((id) => live.some((row) => row.sessionId === id)))
+	check("every argv session with a transcript is reported live", transcribed([...procs.keys()]).every((id) => live.some((row) => row.sessionId === id)))
 
 	// --- QUEUED MESSAGES ---
 
@@ -188,7 +191,7 @@ async function main(): Promise<void> {
 	console.log(`\nconfig file  ${configFile()}`)
 	check("home directory reports as never-trustable", trustState(os.homedir()) === "home", trustState(os.homedir()))
 	check("a nonexistent folder is not trusted", trustState("/nonexistent-folder-xyz") === "untrusted", trustState("/nonexistent-folder-xyz"))
-	for (const project of latest.projects.slice(0, 6)) console.log(`  ${trustState(project.cwd).padEnd(10)}${project.name}`)
+	for (const workspace of latest.workspaces.slice(0, 6)) console.log(`  ${trustState(workspace.cwd).padEnd(10)}${workspace.name}`)
 
 	// --- CACHE ROUND-TRIP ---
 
@@ -275,6 +278,32 @@ async function main(): Promise<void> {
 		line({ type: "user", message: { role: "user", content: [{ type: "text", text: "carry on then" }] }, timestamp: "2026-07-30T10:01:00.000Z" })
 	])
 	check("a later prompt clears the interrupt", resumedRec?.interrupted === false && (resumedRec?.lastUserTurnAt || 0) > 0)
+
+	/* A Monitor is armed, fires, and the turn that ends after it must not read as finished until it has. */
+	const monitorLines = [
+		line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Monitor", input: { command: "watch the build" } }], stop_reason: "tool_use" }, timestamp: "2026-07-30T10:00:05.000Z", cwd: "/tmp/p" }),
+		line({ type: "user", message: { role: "user", content: [{ tool_use_id: "t1", type: "tool_result", content: "Monitor started (task b663gfqb4, timeout 3600000ms)." }] }, timestamp: "2026-07-30T10:00:06.000Z" }),
+		line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "watching the build" }], stop_reason: "end_turn" }, timestamp: "2026-07-30T10:00:07.000Z" })
+	]
+	const armedRec = synth("11111111-aaaa-bbbb-cccc-000000000006", monitorLines)
+	check("an armed monitor is counted after the turn ends", armedRec?.pendingTasks === 1 && armedRec?.endTurn === true, String(armedRec?.pendingTasks))
+
+	const firedRec = synth("11111111-aaaa-bbbb-cccc-000000000007", [...monitorLines,
+		line({ type: "user", message: { role: "user", content: "<task-notification>\n<task-id>b663gfqb4</task-id>\n<status>completed</status>\n</task-notification>" }, timestamp: "2026-07-30T10:05:00.000Z" })
+	])
+	check("the notification clears the task", firedRec?.pendingTasks === 0, String(firedRec?.pendingTasks))
+
+	const stoppedRec = synth("11111111-aaaa-bbbb-cccc-000000000008", [...monitorLines,
+		line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "TaskStop", input: { task_id: "b663gfqb4" } }], stop_reason: "tool_use" }, timestamp: "2026-07-30T10:05:00.000Z" })
+	])
+	check("a task killed by hand stops counting", stoppedRec?.pendingTasks === 0, String(stoppedRec?.pendingTasks))
+
+	const foregroundRec = synth("11111111-aaaa-bbbb-cccc-000000000009", [
+		line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Agent", input: { prompt: "look into it" } }], stop_reason: "tool_use" }, timestamp: "2026-07-30T10:00:05.000Z", cwd: "/tmp/p" }),
+		line({ type: "user", message: { role: "user", content: [{ tool_use_id: "t1", type: "tool_result", content: [{ type: "text", text: "the agent's report, which mentions task ids and IDs freely" }] }] }, timestamp: "2026-07-30T10:02:00.000Z" }),
+		line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }], stop_reason: "end_turn" }, timestamp: "2026-07-30T10:02:10.000Z" })
+	])
+	check("an agent that ran in the foreground arms nothing", foregroundRec?.pendingTasks === 0, String(foregroundRec?.pendingTasks))
 
 	finish(warmMonitor)
 }

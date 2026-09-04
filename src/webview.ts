@@ -11,8 +11,8 @@ export interface ViewHandlers {
 	refreshUsage: () => void
 	reveal: (sessionId: string) => void
 	copyId: (sessionId: string) => void
+	kill: (sessionId: string) => void
 	openFolder: (cwd: string) => void
-	selectProject: (cwd: string) => void
 	enablePreciseStatus: () => void
 }
 
@@ -46,8 +46,8 @@ export class SessionsView implements vscode.WebviewViewProvider {
 			case "diffFile": this.handlers.diffFile(String(message.sessionId || ""), String(message.file || ""), Number(message.version || 0)); break
 			case "reveal": this.handlers.reveal(String(message.sessionId || "")); break
 			case "copyId": this.handlers.copyId(String(message.sessionId || "")); break
+			case "kill": this.handlers.kill(String(message.sessionId || "")); break
 			case "openFolder": this.handlers.openFolder(String(message.cwd || "")); break
-			case "selectProject": this.handlers.selectProject(String(message.cwd || "")); break
 			case "refreshUsage": this.handlers.refreshUsage(); break
 			case "enablePreciseStatus": this.handlers.enablePreciseStatus(); break
 		}
@@ -73,7 +73,6 @@ export class SessionsView implements vscode.WebviewViewProvider {
 		const nonce = makeNonce()
 		const css = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "panel.css"))
 		const js = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "panel.js"))
-		const modeIcons = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "modeicons.js"))
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -87,11 +86,10 @@ export class SessionsView implements vscode.WebviewViewProvider {
 	<div class="toolbar">
 		<div class="searchWrap">
 			<span class="searchIcon" aria-hidden="true">&#9906;</span>
-			<input id="search" type="search" placeholder="Search title, prompt, project, branch…" autocomplete="off" spellcheck="false" aria-label="Search conversations">
+			<input id="search" type="search" placeholder="Search title, prompt, project…" autocomplete="off" spellcheck="false" aria-label="Search conversations">
 			<button id="clear" class="clear" type="button" title="Clear search" aria-label="Clear search" hidden>&#10005;</button>
 		</div>
 		<div class="row2">
-			<select id="project" aria-label="Filter by project"></select>
 			<span id="count" class="count"></span>
 		</div>
 		<div id="chips" class="chips" role="tablist"></div>
@@ -102,7 +100,6 @@ export class SessionsView implements vscode.WebviewViewProvider {
 		<div id="empty" class="empty" hidden></div>
 	</div>
 	<button id="usage" class="usage" type="button" hidden></button>
-	<script nonce="${nonce}" src="${modeIcons}"></script>
 	<script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`

@@ -12,7 +12,7 @@ function record(over: Partial<TranscriptRecord> = {}): TranscriptRecord {
 		title: "t", titleSource: "ai", lastPrompt: "", cwd: "/tmp/p", projectName: "p", gitBranch: "", version: "",
 		permissionMode: "default", permissionModeAt: NOW - 2000, model: "claude-opus-5", changed: [],
 		lastActivity: NOW - 1000, lastRecordAt: NOW - 1000, lastAssistantAt: NOW - 1000,
-		pendingTool: "", pendingToolAt: 0, planFile: "", pendingMessages: 0, pendingMessageAt: 0, lastErrorAt: 0, errorMessage: "", endTurn: false, interrupted: false, lastUserTurnAt: 0,
+		pendingTool: "", pendingToolAt: 0, pendingTasks: 0, planFile: "", pendingMessages: 0, pendingMessageAt: 0, lastErrorAt: 0, errorMessage: "", endTurn: false, interrupted: false, lastUserTurnAt: 0,
 		...over
 	}
 }
@@ -36,14 +36,19 @@ function state(over: Partial<Parameters<typeof resolveState>[0]> = {}): string {
 // --- CASES ---
 
 console.log("liveness")
-expect("no live process is closed", state({ live: undefined }), "closed")
-expect("no live process beats a fresh busy signal", state({ live: undefined, signal: signal({ state: "busy" }) }), "closed")
+expect("no live process is killed", state({ live: undefined }), "killed")
+expect("no live process beats a fresh busy signal", state({ live: undefined, signal: signal({ state: "busy" }) }), "killed")
 
 console.log("\nhook signals")
 expect("fresh needs-input wins", state({ signal: signal() }), "needs-input")
 expect("fresh needs-input overrides a finished transcript", state({ record: record({ endTurn: true }), signal: signal() }), "needs-input")
 expect("fresh Stop is finished", state({ signal: signal({ state: "finished", event: "Stop" }) }), "finished")
-expect("fresh SessionEnd is closed", state({ signal: signal({ state: "closed", event: "SessionEnd" }) }), "closed")
+expect("fresh SessionEnd is killed", state({ signal: signal({ state: "closed", event: "SessionEnd" }) }), "killed")
+expect("a turn that ended with a task still out is waiting, not finished", state({ record: record({ endTurn: true, pendingTasks: 1 }) }), "waiting")
+expect("a Stop hook does not make an armed session look done", state({ record: record({ endTurn: true, pendingTasks: 1 }), signal: signal({ state: "finished" }) }), "waiting")
+expect("no tasks out means the turn really is finished", state({ record: record({ endTurn: true }) }), "finished")
+expect("a busy session is unaffected by an outstanding task", state({ record: record({ pendingTool: "Bash", pendingToolAt: NOW - 1000, pendingTasks: 1 }) }), "busy")
+
 expect("stale needs-input is ignored", state({ record: record({ lastRecordAt: NOW, endTurn: true }), signal: signal({ at: NOW - 30000 }) }), "finished")
 expect("signal within the 2s tolerance still counts", state({ record: record({ lastRecordAt: NOW + 1500, endTurn: true }), signal: signal({ at: NOW }) }), "needs-input")
 

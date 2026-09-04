@@ -1,10 +1,10 @@
 // --- BOOTSTRAP ---
 
 const vscode = acquireVsCodeApi()
-const el = { search: byId("search"), clear: byId("clear"), project: byId("project"), count: byId("count"), chips: byId("chips"), hint: byId("hint"), list: byId("list"), empty: byId("empty"), usage: byId("usage") }
+const el = { search: byId("search"), clear: byId("clear"), count: byId("count"), chips: byId("chips"), hint: byId("hint"), list: byId("list"), empty: byId("empty"), usage: byId("usage") }
 const nodes = new Map()		// entry key -> element, so rows survive re-renders and keep the spinner spinning
-let data = { rows: [], projects: [], activeCwd: "", selectedCwd: "", needsInputTotal: 0, preciseStatus: false, promptPreviewLines: 2, groupByProject: false, showClosed: true, usage: { limits: [], fetchedAt: 0 } }
-let ui = Object.assign({ query: "", chip: "all", hintDismissed: false }, vscode.getState() || {})
+let data = { rows: [], workspaces: [], activeCwd: "", needsInputTotal: 0, preciseStatus: false, promptPreviewLines: 2, usage: { limits: [], fetchedAt: 0 } }
+let ui = Object.assign({ query: "", chip: "all", hintDismissed: false, collapsed: {} }, vscode.getState() || {})		// collapsed is keyed by workspace folder, so a fold survives a reload
 let openMenu = null
 
 // --- ICONS: built from primitives so they stay legible at 14px ---
@@ -19,21 +19,7 @@ const ICONS = {
 		<rect x="4.6" y="7.2" width="8.4" height="6.2" rx="2.6"/>
 	</svg>`,
 	check: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.6l3.1 3.1L12.6 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-	monitor: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="8.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 11.2v2.2M5.4 13.4h5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
-	shield: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.7l5 1.8v4.1c0 3.1-2.1 5.3-5 6.6-2.9-1.3-5-3.5-5-6.6V3.5z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`,
-	shieldCheck: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.7l5 1.8v4.1c0 3.1-2.1 5.3-5 6.6-2.9-1.3-5-3.5-5-6.6V3.5z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.7 7.9l1.7 1.7 3-3.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-	shieldOff: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.7l5 1.8v4.1c0 3.1-2.1 5.3-5 6.6-2.9-1.3-5-3.5-5-6.6V3.5z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.1 12.4L11.9 3.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
-	plan: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="2.6" width="9.6" height="11" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.7 6h4.6M5.7 8.6h4.6M5.7 11.2h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
-}
-
-/* Permission modes, with Claude Code's own labels and icons (see modeicons.js). bypassPermissions is tinted red — it is the one mode where Claude never stops to ask. */
-const PERMISSIONS = {
-	default: { label: "Manual — asks before each edit", danger: false },
-	acceptEdits: { label: "Edit automatically", danger: false },
-	plan: { label: "Plan — explores, then proposes", danger: false },
-	auto: { label: "Auto — pauses only for risky actions", danger: false },
-	bypassPermissions: { label: "Bypass permissions — never asks", danger: true },
-	dontAsk: { label: "Does not ask", danger: true }
+	monitor: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="8.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 11.2v2.2M5.4 13.4h5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`
 }
 
 el.search.value = ui.query
@@ -46,14 +32,13 @@ window.addEventListener("message", (event) => {
 	const message = event.data
 	if (message.type === "data") { data = message.data; render() }
 	if (message.type === "focusSearch") { el.search.focus(); el.search.select() }
-	if (message.type === "showWaiting") { ui.chip = "waiting"; save(); vscode.postMessage({ type: "selectProject", cwd: "" }); render() }
+	if (message.type === "showWaiting") { ui.chip = "waiting"; save(); render() }
 })
 
 // --- INPUT ---
 
 el.search.addEventListener("input", debounce(() => { ui.query = el.search.value; save(); render() }, 120))
 el.clear.addEventListener("click", () => { el.search.value = ""; ui.query = ""; save(); render(); el.search.focus() })
-el.project.addEventListener("change", () => vscode.postMessage({ type: "selectProject", cwd: el.project.value }))
 el.usage.addEventListener("click", () => vscode.postMessage({ type: "refreshUsage" }))
 
 document.addEventListener("keydown", (event) => {
@@ -74,8 +59,7 @@ document.addEventListener("click", (event) => { if (openMenu && !openMenu.contai
 /* Rebuild the toolbar and reconcile the list against the current filters. */
 function render() {
 	el.clear.hidden = !ui.query
-	renderProjects()
-	const scoped = data.rows.filter(inScope)
+	const scoped = data.rows
 	const visible = scoped.filter(matchesChip).filter(matchesQuery)
 	renderChips(scoped)
 	el.count.textContent = visible.length === scoped.length ? `${scoped.length}` : `${visible.length} of ${scoped.length}`
@@ -86,13 +70,8 @@ function render() {
 	if (!visible.length) renderEmpty(scoped.length)
 }
 
-function inScope(row) {
-	if (!data.showClosed && row.state === "closed") return false
-	return !data.selectedCwd || row.cwd === data.selectedCwd
-}
-
 function matchesChip(row) {
-	if (ui.chip === "waiting") return isWaiting(row.state)
+	if (ui.chip === "waiting") return needsAttention(row.state)
 	if (ui.chip === "busy") return row.state === "busy"
 	return true
 }
@@ -103,27 +82,10 @@ function matchesQuery(row) {
 	return haystack(row).some((field) => field.toLowerCase().includes(needle))
 }
 
-function haystack(row) { return [row.title, row.lastPrompt, row.projectName, row.gitBranch, row.tool] }
-
-const NAME_MAX = 15
-
-/* The project name only earns its place when the row is somewhere other than the folder you are already in. */
-function showProjectName(row) {
-	if (data.selectedCwd || data.groupByProject) return false
-	return row.cwd !== data.activeCwd
-}
-
-/* Project dropdown, active project preselected by the host. */
-function renderProjects() {
-	const options = [`<option value="">All projects (${data.rows.length})</option>`]
-	for (const project of data.projects) options.push(`<option value="${escape(project.cwd)}">${escape(project.name)} (${project.count})</option>`)
-	const markup = options.join("")
-	if (el.project.dataset.markup !== markup) { el.project.innerHTML = markup; el.project.dataset.markup = markup }
-	el.project.value = data.projects.some((project) => project.cwd === data.selectedCwd) ? data.selectedCwd : ""
-}
+function haystack(row) { return [row.title, row.lastPrompt, row.projectName, row.tool] }
 
 function renderChips(scoped) {
-	const waiting = scoped.filter((row) => isWaiting(row.state)).length
+	const waiting = scoped.filter((row) => needsAttention(row.state)).length
 	const busy = scoped.filter((row) => row.state === "busy").length
 	const chips = [
 		{ id: "all", label: "All", warn: false },
@@ -142,10 +104,10 @@ function renderChips(scoped) {
 /* Attention must never be hidden by a filter, so say so when waiting conversations sit outside the current view. */
 function renderHints(scoped) {
 	const notices = []
-	const elsewhere = data.needsInputTotal - scoped.filter((row) => isWaiting(row.state)).length
+	const elsewhere = data.needsInputTotal - scoped.filter((row) => needsAttention(row.state)).length
 	if (elsewhere > 0) notices.push(`<div><a data-act="showAll">${elsewhere} conversation${elsewhere === 1 ? "" : "s"} waiting outside this filter — show all</a></div>`)
 	if (!data.preciseStatus && !ui.hintDismissed) {
-		notices.push(`<div><strong>Status is inferred.</strong> Without hooks, a slow command and a permission prompt look identical, so uncertain rows show a faded hand.<br><button data-act="precise">Enable precise status</button> <a data-act="dismiss">Not now</a></div>`)
+		notices.push(`<div><strong>Status is inferred.</strong> Without hooks, a slow command and a permission prompt look identical, so a stalled command reads as "Waiting?" rather than asking for you.<br><button data-act="precise">Enable precise status</button> <a data-act="dismiss">Not now</a></div>`)
 	}
 	el.hint.hidden = notices.length === 0
 	const markup = notices.join("")
@@ -158,7 +120,7 @@ function renderHints(scoped) {
 			if (node.dataset.act === "dismiss") { ui.hintDismissed = true; save(); render(); return }
 			ui.chip = "all"
 			save()
-			vscode.postMessage({ type: "selectProject", cwd: "" })
+			render()
 		})
 	}
 }
@@ -173,7 +135,10 @@ function renderUsage() {
 	el.usage.hidden = usage.limits.length === 0
 	if (el.usage.hidden) return
 	const stale = !usage.fetchedAt || Date.now() - usage.fetchedAt > STALE_USAGE_MS
-	const rows = usage.limits.map((limit) => `<div class="bar${limit.active ? " active" : ""}" title="${escape(barTooltip(limit))}"><span class="lbl">${escape(limit.label)}</span><span class="track"><span class="pace" data-pct="${windowElapsed(limit)}"></span><span class="fill ${limit.severity}" data-pct="${limit.percent}"></span></span><span class="pct">${limit.percent}%</span></div>`)
+	/* Both bars carry the same tooltip: the two windows are read together (a 5-hour reading only means
+	   something next to the weekly one), so hovering either bar should not hide the other. */
+	const tooltip = usage.limits.map(barTooltip).join("\n")
+	const rows = usage.limits.map((limit) => `<div class="bar${limit.active ? " active" : ""}" title="${escape(tooltip)}"><span class="lbl">${escape(limit.label)}</span><span class="track"><span class="pace" data-pct="${windowElapsed(limit)}"></span><span class="fill ${limit.severity}" data-pct="${limit.percent}"></span></span><span class="pct">${limit.percent}%</span></div>`)
 	const asOf = usage.fetchedAt ? `as of ${age(Date.now() - usage.fetchedAt)} ago${stale ? " — click to refresh" : ""}` : "no reading yet — click to refresh"
 	const markup = `${rows.join("")}<div class="asOf"><span>${escape(asOf)}</span><span class="resets">${escape(resetLabel(usage.limits))}</span></div>`
 	setClass(el.usage, `usage${stale ? " stale" : ""}`)
@@ -225,30 +190,46 @@ function barTooltip(limit) {
 }
 
 function renderEmpty(scopedCount) {
-	const reason = scopedCount === 0 ? "No conversations for this project yet." : "Nothing matches the current search and filter."
+	const reason = scopedCount === 0 ? "No conversations yet." : "Nothing matches the current search and filter."
 	el.empty.innerHTML = `${escape(reason)}<br><button type="button">Reset filters</button>`
 	el.empty.querySelector("button").addEventListener("click", () => {
 		ui.query = ""
 		ui.chip = "all"
 		el.search.value = ""
 		save()
-		vscode.postMessage({ type: "selectProject", cwd: "" })
 		render()
 	})
 }
 
 // --- LIST RECONCILE ---
 
-/* Flat rows, or group headers interleaved when grouping is on. Keys let reconcile move nodes instead of rebuilding them. */
+/* One foldable header per workspace, its rows beneath it. The folder this window has open comes first —
+   it is the one you are working in — and the rest follow in order of most recent activity, which is the
+   order the rows already arrive in. Keys let reconcile move nodes instead of rebuilding them. */
 function entriesFor(rows) {
-	if (!data.groupByProject) return rows.map((row) => ({ key: `r:${row.sessionId}`, kind: "row", row }))
-	const entries = []
-	let current = null
+	const groups = new Map()
 	for (const row of rows) {
-		if (row.cwd !== current) { current = row.cwd; entries.push({ key: `g:${current}`, kind: "group", label: row.projectName || "(unknown)" }) }
-		entries.push({ key: `r:${row.sessionId}`, kind: "row", row })
+		if (!groups.has(row.cwd)) groups.set(row.cwd, [])
+		groups.get(row.cwd).push(row)
+	}
+	const order = [...groups.keys()]
+	const home = order.indexOf(data.activeCwd)
+	if (home > 0) order.unshift(order.splice(home, 1)[0])
+	const entries = []
+	for (const cwd of order) {
+		const inGroup = groups.get(cwd)
+		const collapsed = !!ui.collapsed[cwd]
+		entries.push({ key: `g:${cwd}`, kind: "group", cwd, label: workspaceLabel(cwd, inGroup[0]), count: inGroup.length, collapsed, home: cwd === data.activeCwd })
+		if (collapsed) continue
+		for (const row of inGroup) entries.push({ key: `r:${row.sessionId}`, kind: "row", row })
 	}
 	return entries
+}
+
+/* The host disambiguates folders that share a basename, so prefer its label over the row's own. */
+function workspaceLabel(cwd, row) {
+	const workspace = data.workspaces.find((candidate) => candidate.cwd === cwd)
+	return workspace ? workspace.name : (row.projectName || cwd || "(unknown)")
 }
 
 /* Update in place and re-append in order. Touching only what changed keeps the spinner from restarting on every tick. */
@@ -258,7 +239,7 @@ function reconcile(entries) {
 		seen.add(entry.key)
 		let node = nodes.get(entry.key)
 		if (!node) { node = entry.kind === "group" ? makeGroup() : makeRow(); nodes.set(entry.key, node) }
-		if (entry.kind === "group") { if (node.textContent !== entry.label) node.textContent = entry.label }
+		if (entry.kind === "group") updateGroup(node, entry)
 		else updateRow(node, entry.row)
 		el.list.appendChild(node)		// appendChild moves an existing node without recreating it
 	}
@@ -270,9 +251,27 @@ function reconcile(entries) {
 }
 
 function makeGroup() {
-	const node = document.createElement("div")
+	const node = document.createElement("button")
 	node.className = "groupHead"
+	node.type = "button"
+	node.innerHTML = `<span class="caret" aria-hidden="true">&#9656;</span><span class="gname"></span><span class="gcount"></span>`
+	node.addEventListener("click", () => {
+		const cwd = node.dataset.cwd
+		if (ui.collapsed[cwd]) delete ui.collapsed[cwd]
+		else ui.collapsed[cwd] = true
+		save()
+		render()
+	})
 	return node
+}
+
+function updateGroup(node, entry) {
+	node.dataset.cwd = entry.cwd
+	setClass(node, `groupHead${entry.collapsed ? " collapsed" : ""}${entry.home ? " home" : ""}`)
+	node.setAttribute("aria-expanded", String(!entry.collapsed))
+	setText(node, "gname", entry.label)
+	setText(node, "gcount", String(entry.count))
+	node.title = entry.cwd
 }
 
 function makeRow() {
@@ -280,7 +279,7 @@ function makeRow() {
 	node.className = "row"
 	node.setAttribute("role", "listitem")
 	node.tabIndex = 0
-	node.innerHTML = `<div class="gutter"><span class="icon"></span><span class="time"></span><span class="model"></span><span class="perm"></span><button class="remote" type="button" tabindex="-1">${ICONS.monitor}</button></div><div class="body"><div class="title"></div><div class="activity"></div><div class="prompt"></div><div class="meta"></div><div class="files"></div></div><button class="kebab" type="button" tabindex="-1" aria-label="More actions">&#8942;</button>`
+	node.innerHTML = `<div class="gutter"><span class="icon"></span><span class="time"></span><span class="model"></span><button class="remote" type="button" tabindex="-1">${ICONS.monitor}</button></div><div class="body"><div class="title"></div><div class="activity"></div><div class="prompt"></div><div class="files"></div></div><button class="kebab" type="button" tabindex="-1" aria-label="More actions">&#8942;</button>`
 	node.addEventListener("click", (event) => {
 		if (event.target.closest(".kebab") || event.target.closest(".menu") || event.target.closest(".remote")) return
 		vscode.postMessage({ type: "open", sessionId: node.dataset.sessionId })
@@ -308,6 +307,7 @@ function updateRow(node, row) {
 	node.dataset.sessionId = row.sessionId
 	node.dataset.cwd = row.cwd
 	node.dataset.lastActivity = String(row.lastActivity)
+	node.dataset.live = row.live ? "1" : ""		// the row menu offers to kill a process only when there is one
 	setClass(node, `row ${rowTint(row.state)}`.trim())
 	setIcon(node, row.state)
 	setText(node, "time", age(Date.now() - row.lastActivity))
@@ -323,33 +323,14 @@ function updateRow(node, row) {
 	if (many) setHtml(node, "prompt", `${row.pendingMessages} messages pending…`)
 	else setHtml(node, "prompt", `${row.pendingMessages === 1 ? `<span class="pend">[pending]</span> ` : ""}${highlight(row.lastPrompt)}`)
 	prompt.title = many ? `${row.pendingMessages} messages queued and not yet processed` : `${row.pendingMessages === 1 ? "[pending] " : ""}${row.lastPrompt}`
-	const meta = metaFor(row)
-	node.querySelector(".meta").hidden = !meta
-	setHtml(node, "meta", meta)
 	const remote = node.querySelector(".remote")
 	remote.hidden = !row.remoteActive		// purely an indicator now — connecting happens from the row menu
 	setClass(remote, `remote${row.remoteActive ? " on" : ""}`)
 	remote.title = row.remoteActive ? "Remote Control is active — this conversation is reachable from the Claude mobile app" : ""
 	remote.setAttribute("aria-pressed", String(!!row.remoteActive))
-	setPermission(node, row.state === "closed" ? "" : row.permissionMode, row.permissionModeStale)		// a closed conversation's mode is noise, and an empty slot would leave a gap
 	setText(node, "model", row.modelLabel)
 	node.querySelector(".model").title = row.modelLabel ? `Model: ${row.modelLabel}` : ""
 	setFiles(node, row)
-}
-
-/* Permission mode icon. Rewritten only when the mode or its confidence changes.
-   Claude records the mode only on the odd user record — 10 times in a 1500-record session — and never when you toggle it mid-run, so a reading can easily predate the current turn. Those are shown faded and say so, rather than asserting a mode that may have changed. */
-function setPermission(node, mode, stale) {
-	const key = `${mode}|${stale ? "stale" : "fresh"}`
-	if (node.dataset.permMode === key) return
-	node.dataset.permMode = key
-	const perm = node.querySelector(".perm")
-	const spec = PERMISSIONS[mode]
-	const art = (window.MODE_ICONS || {})[mode] || (mode === "dontAsk" ? (window.MODE_ICONS || {}).bypassPermissions : "")
-	perm.innerHTML = art || ""
-	perm.className = `perm${spec?.danger ? " danger" : ""}${stale ? " unsure" : ""}`
-	perm.hidden = !art
-	perm.title = art ? `${spec ? spec.label : mode}${stale ? " — last known; Claude does not record mid-run changes, so enable precise status for a live reading" : ""}` : ""
 }
 
 /* Chips for the files the finished run touched. Rebuilt only when the set changes, so hovering stays stable. */
@@ -382,7 +363,8 @@ function setIcon(node, state) {
 	const icon = node.querySelector(".icon")
 	if (state === "busy") { icon.className = "icon working"; icon.innerHTML = ""; return }
 	if (state === "needs-input") { icon.className = "icon hand"; icon.innerHTML = ICONS.hand; return }
-	if (state === "needs-input?") { icon.className = "icon hand uncertain"; icon.innerHTML = ICONS.hand; return }
+	/* The hand is reserved for a conversation that is genuinely asking you something. A session held up by its own tool — a long command, an armed task — gets the busy ring held still instead: work is out, but nothing is running here. */
+	if (state === "waiting" || state === "needs-input?") { icon.className = "icon working armed"; icon.innerHTML = ""; return }
 	if (state === "finished") { icon.className = "icon check"; icon.innerHTML = ICONS.check; return }
 	if (state === "reviewed") { icon.className = "icon check seen"; icon.innerHTML = ICONS.check; return }
 	icon.className = state === "error" ? "icon bullet error" : "icon bullet"
@@ -390,23 +372,16 @@ function setIcon(node, state) {
 }
 
 function rowTint(state) {
-	if (isWaiting(state)) return "tintAttention"
+	if (state === "needs-input") return "tintAttention"		// only a confirmed ask earns the attention tint; a guess does not
 	if (state === "finished") return "tintDone"
-	if (state === "closed") return "dim"
+	if (state === "killed") return "dim"
 	return ""
-}
-
-/* Returns markup, not text: the project name is bold while the branch stays plain. */
-function metaFor(row) {
-	const parts = []
-	if (showProjectName(row) && row.projectName) parts.push(`<span class="proj">${escape(row.projectName)}</span>`)
-	if (row.gitBranch) parts.push(escape(row.gitBranch))
-	return parts.join(" · ")
 }
 
 function activityClass(state) {
 	if (state === "busy") return "working"
-	if (isWaiting(state)) return "attention"
+	if (state === "waiting" || state === "needs-input?") return "waiting"
+	if (state === "needs-input") return "attention"
 	if (state === "finished") return "done"
 	if (state === "error") return "error"
 	return "muted"
@@ -422,7 +397,8 @@ function toggleMenu(row) {
 	menu.dataset.sessionId = row.dataset.sessionId
 	/* Always the in-session route: this exposes *this conversation* by sending it /remote-control. The title-bar tower is the separate folder-wide server. */
 	const remoteOn = row.querySelector(".remote").classList.contains("on")
-	menu.innerHTML = `<button data-act="open" type="button">Open conversation</button><button data-act="remoteInSession" type="button">${remoteOn ? "Manage Remote Control" : "Remote control this conversation"}</button><button data-act="reveal" type="button">Reveal transcript</button><button data-act="copyId" type="button">Copy session ID</button><button data-act="openFolder" type="button">Open folder in new window</button>`
+	const end = row.dataset.live ? "Kill process and close tab" : "Close tab"
+	menu.innerHTML = `<button data-act="open" type="button">Open conversation</button><button data-act="remoteInSession" type="button">${remoteOn ? "Manage Remote Control" : "Remote control this conversation"}</button><button data-act="reveal" type="button">Reveal transcript</button><button data-act="copyId" type="button">Copy session ID</button><button data-act="openFolder" type="button">Open folder in new window</button><button data-act="kill" class="danger" type="button">${end}</button>`
 	for (const button of menu.querySelectorAll("button")) {
 		button.addEventListener("click", (event) => {
 			event.stopPropagation()
@@ -463,7 +439,7 @@ function age(ms) {
 
 // --- HELPERS ---
 
-function isWaiting(state) { return state === "needs-input" || state === "needs-input?" }
+function needsAttention(state) { return state === "needs-input" || state === "needs-input?" }
 
 function byId(id) { return document.getElementById(id) }
 

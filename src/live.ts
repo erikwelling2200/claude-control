@@ -25,6 +25,24 @@ export function isAlive(pid: number, procStart: string): boolean {
 	return readProcStart(pid) === procStart
 }
 
+/* End a conversation's process. Windows has no graceful signal for a console process, so taskkill is the
+   only way to take the tree down; elsewhere SIGTERM gives Claude the chance to write its SessionEnd
+   records, with SIGKILL as the backstop. The tree matters either way: a session holds running tool
+   processes and subagents that would otherwise outlive it. */
+export function killSessionProcess(pid: number): Promise<void> {
+	return new Promise((resolve) => {
+		if (!pid || pid < 1) return resolve()
+		if (process.platform === "win32") return void execFile("taskkill", ["/PID", String(pid), "/T", "/F"], () => resolve())
+		try { process.kill(-pid, "SIGTERM") } catch { try { process.kill(pid, "SIGTERM") } catch { return resolve() } }
+		setTimeout(() => {
+			if (isAlive(pid, "")) { try { process.kill(-pid, "SIGKILL") } catch { try { process.kill(pid, "SIGKILL") } catch { /* already gone */ } } }
+			resolve()
+		}, KILL_GRACE_MS)
+	})
+}
+
+const KILL_GRACE_MS = 2000
+
 // --- FAST PATH: THE ON-DISK REGISTRY ---
 
 /* Read ~/.claude/sessions/*.json and keep only entries whose process is genuinely still alive. */

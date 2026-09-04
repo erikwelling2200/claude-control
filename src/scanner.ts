@@ -98,6 +98,7 @@ function emptyRecord(file: string, stat: fs.Stats): TranscriptRecord {
 		lastAssistantAt: 0,
 		pendingTool: "",
 		pendingToolAt: 0,
+		pendingTasks: 0,
 		planFile: "",
 		lastErrorAt: 0,
 		errorMessage: "",
@@ -144,6 +145,7 @@ function readHead(file: string): string[] {
 /* Single forward pass over the tail. Forward order lets tool_result cancel its tool_use naturally. */
 function applyTail(record: TranscriptRecord, lines: string[]): void {
 	const pending = new Map<string, PendingTool>()
+	const background = new Map<string, BackgroundTask>()
 	let aiTitle = ""
 	let customTitle = ""
 	let queuedPrompt = false		// lastPrompt holds a still-queued message, which re-appended last-prompt records (they carry the *consumed* prompt) must not clobber
@@ -159,9 +161,10 @@ function applyTail(record: TranscriptRecord, lines: string[]): void {
 			case "queue-operation": queuedPrompt = applyQueue(record, entry, queuedPrompt); break
 			case "file-history-delta": applyDelta(record, entry); break
 			case "system": applySystem(record, entry); break
-			case "assistant": applyAssistant(record, entry, pending); break
-			case "user": applyUser(record, entry, pending); break
+			case "assistant": applyAssistant(record, entry, pending, background); break
+			case "user": applyUser(record, entry, pending, background); break
 		}
+		if (line.includes("<task-notification>")) clearFinishedTasks(background, line)		// the notification is written as a user record and again as queue bookkeeping, so match the raw line rather than one carrier
 		const at = timestampOf(entry)
 		if (at > record.lastRecordAt) record.lastRecordAt = at
 		if (entry.cwd) record.cwd = String(entry.cwd)
@@ -175,6 +178,7 @@ function applyTail(record: TranscriptRecord, lines: string[]): void {
 	record.lastPrompt = clip(record.lastPrompt, PROMPT_MAX)
 	const oldest = [...pending.values()].sort((a, b) => a.at - b.at)[0]
 	if (oldest) { record.pendingTool = oldest.name; record.pendingToolAt = oldest.at; record.planFile = oldest.planFile }
+	record.pendingTasks = [...background.values()].filter((task) => task.taskId).length		// a launch whose result never arrived is still the pending tool, not an armed task
 	for (const file of record.changed) {
 		if (!path.isAbsolute(file.path)) file.path = path.join(record.cwd || "", file.path)		// older transcripts record paths relative to cwd
 	}
@@ -182,6 +186,48 @@ function applyTail(record: TranscriptRecord, lines: string[]): void {
 }
 
 interface PendingTool { name: string, at: number, planFile: string }
+
+/* One launch that hands work to a task the session will later be woken for, keyed by its tool_use id. `taskId` is only known once the result comes back. */
+interface BackgroundTask { taskId: string }
+
+/* Tools that can hand work to a task. Whether one actually did is not decided here: the input flag has changed defaults across versions, so the acknowledgement in the tool result is what counts. */
+const LAUNCHERS = new Set(["Monitor", "Agent", "Bash", "PowerShell"])
+
+/* Each launcher acknowledges its task differently, and each says so in the result's opening words. Anchoring there is what keeps a foreground agent's own report — which may say anything at all — from registering as a task. */
+const ACKS = [
+	/^Monitor started \(task ([a-z0-9]+)/,
+	/^Command running in background with ID: ([a-z0-9]+)/,
+	/^Async agent launched successfully\.[^]*?\bagentId: ([a-z0-9]+)/
+]
+
+function taskIdOf(text: string): string {
+	for (const ack of ACKS) {
+		const match = ack.exec(text.trimStart())
+		if (match) return match[1]
+	}
+	return ""
+}
+
+/* Forget one task by its own id, whatever launch it came from. */
+function dropTask(background: Map<string, BackgroundTask>, taskId: string): void {
+	if (!taskId) return
+	for (const [toolUseId, task] of background) { if (task.taskId === taskId) background.delete(toolUseId) }
+}
+
+/* A task-notification identifies what reported back by tool-use id (absent on a Monitor's own event summary) and always by task id, so both are honoured. */
+function clearFinishedTasks(background: Map<string, BackgroundTask>, line: string): void {
+	for (const match of line.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g)) background.delete(match[1])
+	const reported = [...line.matchAll(/<task-id>([^<]+)<\/task-id>/g)].map((match) => match[1])
+	for (const taskId of reported) dropTask(background, taskId)
+}
+
+/* tool_result content is a bare string in older transcripts and a block list in current ones. */
+function resultText(block: any): string {
+	const content = block?.content
+	if (typeof content === "string") return content
+	if (Array.isArray(content)) return content.map((part: any) => String(part?.text || "")).join("\n")
+	return ""
+}
 
 /* A prompt submitted while Claude is mid-turn is queued, and the transcript records the enqueue plus whatever later drains it: "dequeue" when Claude consumes one, "popAll" when it consumes the lot, "remove" when it is withdrawn — missing those leaves a phantom pending count forever.
    Counting within the tail is safe: anything written after an enqueue is necessarily in the window too. Current versions stamp the queued text on the enqueue itself; the `last-prompt` record is only written when the prompt is *consumed*, so without `content` the preview would show the previous message as the pending one. */
@@ -229,7 +275,7 @@ function applySystem(record: TranscriptRecord, entry: any): void {
 	record.errorMessage = clip(String(entry.error?.formatted || entry.error?.message || "API error"), 200)
 }
 
-function applyAssistant(record: TranscriptRecord, entry: any, pending: Map<string, PendingTool>): void {
+function applyAssistant(record: TranscriptRecord, entry: any, pending: Map<string, PendingTool>, background: Map<string, BackgroundTask>): void {
 	if (entry.isSidechain) return		// subagent chatter, not this conversation's state
 	const at = timestampOf(entry)
 	record.endTurn = entry.message?.stop_reason === "end_turn"
@@ -240,17 +286,26 @@ function applyAssistant(record: TranscriptRecord, entry: any, pending: Map<strin
 	for (const block of blocksOf(entry)) {
 		if (block?.type !== "tool_use" || typeof block.id !== "string") continue
 		pending.set(block.id, { name: String(block.name || "tool"), at, planFile: String(block.input?.planFilePath || "") })		// ExitPlanMode names its own plan file
+		if (LAUNCHERS.has(String(block.name))) background.set(block.id, { taskId: "" })
+		else if (block.name === "TaskStop" || block.name === "KillShell") dropTask(background, String(block.input?.task_id || block.input?.shell_id || ""))		// a task killed by hand never sends a notification
 	}
 }
 
-function applyUser(record: TranscriptRecord, entry: any, pending: Map<string, PendingTool>): void {
+function applyUser(record: TranscriptRecord, entry: any, pending: Map<string, PendingTool>, background: Map<string, BackgroundTask>): void {
 	if (entry.isSidechain || entry.isMeta) return		// injected reminders are not the user speaking
 	const at = timestampOf(entry)
 	for (const block of blocksOf(entry)) {
-		if (block?.type === "tool_result" && typeof block.tool_use_id === "string") pending.delete(block.tool_use_id)
+		if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+			pending.delete(block.tool_use_id)
+			const task = background.get(block.tool_use_id)
+			if (task) {
+				task.taskId = taskIdOf(resultText(block))		// the acknowledgement is where a task gets its id
+				if (!task.taskId) background.delete(block.tool_use_id)		// it ran in the foreground after all
+			}
+		}
 		if (block?.type !== "text") continue
 		/* Hitting stop writes a user record saying "[Request interrupted by user]" (or "… for tool use"). It is not the user speaking — counting it would read as a prompt awaiting a reply and pin the row on "Thinking" — and the interrupted tool_use never gets its result, so the turn is closed out here. */
-		if (String(block.text || "").startsWith("[Request interrupted by user")) { record.interrupted = true; pending.clear(); continue }
+		if (String(block.text || "").startsWith("[Request interrupted by user")) { record.interrupted = true; pending.clear(); continue }		// background tasks survive an interrupt, so they are deliberately not cleared
 		record.interrupted = false
 		if (at > record.lastUserTurnAt) record.lastUserTurnAt = at
 	}

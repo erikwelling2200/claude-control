@@ -39,7 +39,13 @@ body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var
 .hint a { color:var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
 
 /* GROUPS */
-.groupHead { padding:10px 10px 4px; color:var(--vscode-descriptionForeground); font-size:var(--cm-small); font-weight:600; letter-spacing:.4px; text-transform:uppercase; }
+.groupHead { display:flex; align-items:center; gap:5px; width:100%; padding:7px 9px 5px; color:var(--vscode-descriptionForeground); background:none; border:none; cursor:pointer; font-family:inherit; font-size:var(--cm-small); font-weight:600; letter-spacing:.4px; text-align:left; text-transform:uppercase; }
+.groupHead:hover { color:var(--vscode-foreground); }
+.groupHead .caret { display:inline-block; font-size:10px; transition:transform .1s ease; transform:rotate(90deg); }
+.groupHead.collapsed .caret { transform:rotate(0deg); }
+.groupHead .gname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.groupHead.home .gname { color:var(--vscode-foreground); }		/* the folder this window has open, always first in the list */
+.groupHead .gcount { margin-left:auto; padding-left:6px; font-weight:400; letter-spacing:0; opacity:.75; }
 
 /* ROWS */
 .list { padding:2px 0 10px; }
@@ -53,23 +59,17 @@ body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var
 .row.dim { opacity:.6; }
 .row.dim:hover { opacity:1; }
 
-/* GUTTER: status icon, age, permission mode, remote-control toggle, model */
+/* GUTTER: status icon, age, remote-control toggle, model */
 .gutter { flex:none; display:flex; flex-direction:column; align-items:center; gap:4px; width:34px; padding-top:1px; }
 .time { color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 3px); line-height:1; white-space:nowrap; }
-.perm { display:flex; align-items:center; justify-content:center; width:26px; height:26px; color:var(--vscode-descriptionForeground); opacity:.85; }
-.perm[hidden] { display:none; }		/* the flex display above would otherwise defeat the hidden attribute */
-.perm svg { width:100%; height:100%; display:block; }
-.perm.danger { color:var(--vscode-charts-red,#F14C4C); opacity:1; }
-.perm.unsure { opacity:.4; }		/* the reading predates this turn, so do not assert it */
-.row:hover .perm.unsure { opacity:.8; }
 .model { color:var(--vscode-descriptionForeground); font-size:8px; font-weight:700; letter-spacing:.3px; line-height:1; opacity:.75; white-space:nowrap; }
 
 /* STATUS ICONS */
 .icon { display:flex; align-items:center; justify-content:center; width:14px; height:14px; }
 .icon svg { width:100%; height:100%; display:block; }
 .icon.working { width:12px; height:12px; border:2px solid rgba(55,148,255,.3); border-top-color:var(--cm-working); border-radius:50%; animation:spin .8s linear infinite; }
+.icon.working.armed { animation:none; opacity:.5; }		/* a task will wake the session, but nothing is running right now */
 .icon.hand { color:var(--cm-attention); }
-.icon.hand.uncertain { opacity:.55; }
 .icon.check { color:var(--cm-done); }
 .icon.check.seen { color:var(--vscode-descriptionForeground); }
 .icon.bullet { width:14px; height:14px; position:relative; }
@@ -91,13 +91,12 @@ body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var
 .activity { margin-top:1px; font-size:var(--cm-small); font-weight:600; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .activity.working { color:var(--cm-working); }
 .activity.attention { color:var(--cm-attention); }
+.activity.waiting { color:var(--cm-working); opacity:.5; }
 .activity.done { color:var(--cm-done); }
 .activity.error { color:var(--vscode-charts-red,#F14C4C); }
 .activity.muted { color:var(--vscode-descriptionForeground); }
 .prompt { margin-top:3px; color:var(--vscode-descriptionForeground); font-size:var(--cm-small); line-height:1.4; display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; }
 .prompt .pend { font-weight:700; }
-.meta { margin-top:3px; color:var(--vscode-descriptionForeground); font-size:calc(var(--vscode-font-size) - 3px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.meta .proj { color:var(--vscode-foreground); font-weight:700; }
 .hit { color:var(--vscode-list-highlightForeground,var(--vscode-textLink-foreground)); font-weight:700; }
 
 /* CHANGED-FILE CHIPS */
@@ -113,6 +112,7 @@ body { margin:0; padding:0; display:flex; flex-direction:column; font-family:var
 .kebab:hover { color:var(--vscode-foreground); background:var(--vscode-toolbar-hoverBackground); }
 .menu { position:absolute; right:8px; z-index:5; min-width:170px; padding:3px; background:var(--vscode-menu-background,var(--vscode-editorWidget-background)); border:1px solid var(--vscode-menu-border,var(--vscode-editorWidget-border)); border-radius:4px; box-shadow:0 3px 10px rgba(0,0,0,.35); }
 .menu button { display:block; width:100%; padding:4px 8px; color:var(--vscode-menu-foreground,var(--vscode-foreground)); background:none; border:none; border-radius:2px; cursor:pointer; font-family:inherit; font-size:var(--cm-small); text-align:left; }
+.menu button.danger { margin-top:3px; border-top:1px solid var(--vscode-menu-separatorBackground,rgba(128,128,128,.35)); border-radius:0 0 2px 2px; color:var(--vscode-errorForeground,#F14C4C); }
 .menu button:hover { color:var(--vscode-menu-selectionForeground,var(--vscode-list-activeSelectionForeground)); background:var(--vscode-menu-selectionBackground,var(--vscode-list-activeSelectionBackground)); }
 
 /* EMPTY */

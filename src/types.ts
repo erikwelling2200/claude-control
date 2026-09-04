@@ -1,7 +1,7 @@
 // --- STATE ---
 
-/* "needs-input?" is the heuristic guess used only when hooks are not installed. "finished" means done but not yet looked at; "reviewed" means the user has since opened it. */
-export type SessionState = "busy" | "needs-input" | "needs-input?" | "finished" | "reviewed" | "closed" | "error"
+/* "needs-input?" is the heuristic guess used only when hooks are not installed. "waiting" means the turn is over but a background task will wake the session, so it is not done. "finished" means done but not yet looked at; "reviewed" means the user has since opened it. "killed" means the conversation has no process any more, whatever its tab still shows. */
+export type SessionState = "busy" | "needs-input" | "needs-input?" | "waiting" | "finished" | "reviewed" | "killed" | "error"
 
 export type TitleSource = "custom" | "ai" | "head" | "registry" | "id"
 
@@ -29,6 +29,7 @@ export interface TranscriptRecord {
 	lastAssistantAt: number
 	pendingTool: string
 	pendingToolAt: number
+	pendingTasks: number		// background tasks launched but not yet reported back — the session will be woken, so an ended turn is not the end
 	planFile: string		// set when the pending tool is ExitPlanMode, from its own planFilePath input
 	lastErrorAt: number
 	errorMessage: string
@@ -123,13 +124,10 @@ export interface ProjectOption {
 
 export interface PanelData {
 	rows: SessionRow[]
-	projects: ProjectOption[]
-	activeCwd: string
-	selectedCwd: string		// "" means all projects; the host resolves this, not the webview
+	workspaces: ProjectOption[]		// one per folder with conversations, labels already disambiguated, for the list's group headers
+	activeCwd: string		// the folder this window has open, whose group the list puts first
 	needsInputTotal: number
 	preciseStatus: boolean
 	promptPreviewLines: number
-	groupByProject: boolean
-	showClosed: boolean
 	usage: UsageSnapshot
 }

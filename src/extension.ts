@@ -5,10 +5,13 @@ import * as os from "os"
 import * as path from "path"
 import * as vscode from "vscode"
 import { hooksInstalled, hooksOutdated, installHooks, uninstallHooks } from "./hooks"
+import { SharedTabs } from "./tabshare"
+import { killSessionProcess } from "./live"
+import { ChatTabs, chatTabs } from "./tabs"
 import { canonical, claudeRoot, findClaudeExecutable, projectName, projectsDir, slugify } from "./paths"
 import { RemoteControl } from "./remote"
 import type { PanelData, SessionRow } from "./types"
-import { isWaiting, Monitor, type MonitorConfig } from "./watcher"
+import { needsAttention, Monitor, type MonitorConfig } from "./watcher"
 import { SessionsView } from "./webview"
 
 // --- CONSTANTS ---
@@ -16,7 +19,6 @@ import { SessionsView } from "./webview"
 const OPEN_COMMAND = "claude-vscode.editor.open"		// internal to the Claude Code extension: (sessionId, initialPrompt, viewColumn)
 const REMOTE_COMMAND = "/remote-control"
 const USAGE_COMMAND = "/usage"
-const SELECTED_KEY = "claudeMonitor.selectedCwd"
 const PROMPTED_KEY = "claudeMonitor.hooksPrompted"
 const SEEN_KEY = "claudeMonitor.seenAt"
 const STALE_KEY = "claudeMonitor.staleTabExplained"
@@ -25,11 +27,11 @@ let monitor: Monitor | undefined
 let view: SessionsView | undefined
 let remote: RemoteControl | undefined
 let statusItem: vscode.StatusBarItem | undefined
-let latest: PanelData | undefined
 let openCommandAvailable: boolean | undefined
 let fallbackWarned = false
 let usageRefreshing = false
 let usageOutput: vscode.OutputChannel | undefined
+let log: vscode.OutputChannel | undefined
 
 // --- ACTIVATION ---
 
@@ -39,6 +41,8 @@ export function activate(context: vscode.ExtensionContext): void {
 	statusItem.name = "Claude Control"
 	context.subscriptions.push(statusItem)
 	context.subscriptions.push({ dispose: () => usageOutput?.dispose() })
+	log = vscode.window.createOutputChannel("Claude Control")
+	context.subscriptions.push(log)
 
 	remote = new RemoteControl(() => publishRemoteState())
 	context.subscriptions.push({ dispose: () => remote?.dispose() })
@@ -47,7 +51,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		readConfig(),
 		path.join(context.globalStorageUri.fsPath, "index.json"),
 		activeWorkspaceCwd(),
-		(data) => publish(context, data),
+		(data) => publish(data),
 		(row) => announce(row)
 	)
 	context.subscriptions.push({ dispose: () => monitor?.dispose() })
@@ -62,8 +66,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		refreshUsage: () => void refreshUsage(true),
 		reveal: (sessionId) => void revealTranscript(sessionId),
 		copyId: (sessionId) => void copySessionId(sessionId),
+		kill: (sessionId) => void killSession(sessionId),
 		openFolder: (cwd) => void vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(cwd), { forceNewWindow: true }),
-		selectProject: (cwd) => selectProject(context, cwd),
 		enablePreciseStatus: () => void vscode.commands.executeCommand("claudeMonitor.enablePreciseStatus")
 	}, (visible) => monitor?.setVisible(visible))
 	context.subscriptions.push(vscode.window.registerWebviewViewProvider("claudeMonitor.sessions", view, { webviewOptions: { retainContextWhenHidden: true } }))
@@ -76,6 +80,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		monitor?.setConfig(readConfig())
 	}))
 	context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => monitor?.setActiveCwd(activeWorkspaceCwd())))
+	watchChatTabs(context)
 
 	monitor.start()
 	syncPreciseStatusSetting()
@@ -100,21 +105,215 @@ function registerCommands(context: vscode.ExtensionContext): void {
 	register("claudeMonitor.showNeedsInput", () => view?.showWaiting())
 	register("claudeMonitor.openSession", (sessionId?: string) => openSession(String(sessionId || ""), context))
 	register("claudeMonitor.revealTranscript", (sessionId?: string) => revealTranscript(String(sessionId || "")))
+	register("claudeMonitor.killSession", (sessionId?: string) => killSession(String(sessionId || "")))
 }
+
+// --- WHO CAN STILL SEE A CONVERSATION ---
+
+/* A conversation, its process and its chat tab are three different things (see tabs.ts). This wires the
+   two halves the host owns: ChatTabs watches this window's tabs, and SharedTabs pools that with what
+   every other window has published — so a tab closed in one window empties the row in all of them, and a
+   tab merely sitting in another window, even one VS Code restored and nobody has clicked, still counts
+   as somewhere the conversation can be seen. */
+let sharedTabs: SharedTabs | undefined
+
+function watchChatTabs(context: vscode.ExtensionContext): void {
+	/* Reading the shared record and publishing to it are separate abilities, and a window can have one
+	   without the other. A window with no folder open has no workspace database, so it can never say which
+	   conversation its own tabs hold — but it still lists every conversation and its clicks still have to
+	   reach the window that owns them. Gating both on the same condition left such a window unable to hand
+	   anything over, silently opening every conversation a second time. */
+	const shared = new SharedTabs(path.join(context.globalStorageUri.fsPath, "tabs.json"), () => {
+		applySharedTabs()
+		const wanted = shared.takeOpen(process.pid)		// another window is asking this one to show a conversation it has the tab for
+		if (wanted) void revealHere(wanted, context).then(() => raiseWindow())
+	})
+	sharedTabs = shared
+	shared.start()
+	context.subscriptions.push({ dispose: () => shared.dispose() })
+	applySharedTabs()
+	if (!context.storageUri) return void log?.appendLine("no folder open in this window, so it reads the shared chat tabs without publishing any")
+	new ChatTabs(context.storageUri, (tabbed) => {
+		shared.publish(process.pid, activeWorkspaceCwd(), tabbed)		// the extension-host pid is this window's identity, and dies with it
+		applySharedTabs()
+	}, log).start(context.subscriptions)
+}
+
+function applySharedTabs(): void {
+	if (!sharedTabs) return
+	monitor?.setTabs(sharedTabs.tabbedNow(), sharedTabs.detached())
+}
+
+// --- ENDING A CONVERSATION ---
+
+/* Stop a conversation for good: close the chat tab it is being held in, then kill the process behind it.
+   Both halves are needed — closing the tab on its own can leave the process running, and killing the
+   process on its own leaves a dead tab sitting there. */
+async function killSession(sessionId: string): Promise<void> {
+	if (!sessionId) return
+	const row = monitor?.rowFor(sessionId)
+	if (!row) return void vscode.window.showWarningMessage("Claude Control: that conversation is no longer listed.")
+	const detail = row.pid ? `Its process (pid ${row.pid}) and anything it is still running are killed. The transcript is kept, so it can be resumed later.` : "No process is running for it, so only its tab is closed."
+	const choice = await vscode.window.showWarningMessage(`End "${row.title}"?`, { modal: true, detail }, "End Conversation")
+	if (choice !== "End Conversation") return
+	log?.appendLine(`
+--- end "${row.title}" (${row.sessionId}) pid=${row.pid || "none"} cwd=${row.cwd}`)
+	const closed = await closeSessionTab(row)
+	await killSessionProcess(row.pid)
+	monitor?.markKilled(row.sessionId)		// the transcript was written seconds ago, so nothing else can tell that this session is over yet
+	monitor?.refresh()
+	if (closed || !row.pid) return
+	log?.appendLine("could not close the tab; see the tabs listed above")
+	void vscode.window.showWarningMessage(`Killed "${row.title}", but could not close its tab.`, "Show Log").then((pick) => { if (pick) log?.show(true) })
+}
+
+/* Close the editor tab holding a conversation. Nothing in the tab API carries a session id, so the only
+   handle is the Claude extension's own reveal command: after it runs, the session's tab is the active
+   one. Two things make that harder than it sounds. The tab model is mirrored into the extension host
+   asynchronously, so the reveal resolves before `activeTab` catches up — hence the wait rather than a
+   single read. And the chat can sit in a group that is not the active one, so every group is searched
+   for its own active Claude tab. The viewType check is what keeps a reveal that did nothing from closing
+   an unrelated tab. Which window owns the conversation is deliberately not consulted: a chat's cwd says
+   nothing about where its tab lives — a session started in your home directory sits happily in a project
+   window — and the label match already fails harmlessly when the tab is somewhere else. */
+async function closeSessionTab(row: SessionRow): Promise<boolean> {
+	logTabs("before")
+	if (openCommandAvailable === undefined) openCommandAvailable = (await vscode.commands.getCommands(true)).includes(OPEN_COMMAND)
+	if (!openCommandAvailable) { log?.appendLine(`skipped: ${OPEN_COMMAND} is not registered`); return false }
+	const before = new Set(chatTabs())
+	try { await vscode.commands.executeCommand(OPEN_COMMAND, row.sessionId) } catch (err) { openCommandAvailable = false; log?.appendLine(`reveal failed: ${String(err)}`); return false }
+	const tab = await waitForRevealedTab(before)
+	logTabs("after reveal")
+	if (!tab) { log?.appendLine("no tab identified"); return false }
+	return closeTab(tab, `closing "${tab.label}"`)
+}
+
+/* close() reports false when the workbench declines rather than throwing. Closing the focused editor runs
+   in the workbench itself, so it does not depend on the mirrored tab model being current — but it is only
+   safe while the tab we picked is the active one, which is checked rather than assumed. */
+async function closeTab(tab: vscode.Tab, why: string): Promise<boolean> {
+	log?.appendLine(why)
+	let closed = false
+	try { closed = await vscode.window.tabGroups.close(tab) } catch (err) { log?.appendLine(`close threw: ${String(err)}`) }
+	if (!closed && tab.isActive) {
+		log?.appendLine("close() declined; falling back to closeActiveEditor")
+		try { await vscode.commands.executeCommand("workbench.action.closeActiveEditor") } catch (err) { log?.appendLine(`closeActiveEditor threw: ${String(err)}`) }
+		await delay(TAB_POLL_MS)
+		closed = !chatTabs().includes(tab)
+	}
+	log?.appendLine(`closed=${closed}`)
+	return closed
+}
+
+/* Every Claude chat tab in this window, as the extension host currently sees it. */
+function logTabs(when: string): void {
+	if (!log) return
+	const all = vscode.window.tabGroups.all.flatMap((group) => group.tabs)
+	log.appendLine(`${when}: ${all.length} tabs open, ${chatTabs().length} of them Claude chats`)
+	for (const tab of all) log.appendLine(`  ${tab.isActive ? "*" : " "} ${describeInput(tab)} label="${tab.label}" group=${tab.group.viewColumn}`)
+}
+
+function describeInput(tab: vscode.Tab): string {
+	if (tab.input instanceof vscode.TabInputWebview) return `webview(${tab.input.viewType})`
+	if (tab.input instanceof vscode.TabInputText) return "text"
+	if (tab.input instanceof vscode.TabInputCustom) return `custom(${tab.input.viewType})`
+	return tab.input ? tab.input.constructor?.name || "other" : "none"
+}
+
+const TAB_WAIT_MS = 3000
+const TAB_POLL_MS = 100
+
+/* The revealed chat tab, once the tab model has caught up with the reveal. A tab that was not open before
+   is the one the reveal just created, which is unambiguous; otherwise it is the active Claude tab, and a
+   single one across the whole window still counts even if focus never landed on it. Matching on the label
+   is not among the options: every chat tab is called "Claude Code" until someone renames it by hand. */
+async function waitForRevealedTab(before: Set<vscode.Tab>): Promise<vscode.Tab | undefined> {
+	for (let waited = 0; waited <= TAB_WAIT_MS; waited += TAB_POLL_MS) {
+		const tabs = chatTabs()
+		const fresh = tabs.filter((tab) => !before.has(tab))
+		if (fresh.length === 1) { log?.appendLine("matched the tab the reveal just created"); return fresh[0] }		// safe to close whatever it holds: it was not open a moment ago
+		const active = tabs.filter((tab) => tab.isActive)
+		if (active.length === 1) { log?.appendLine("matched the active chat tab"); return active[0] }
+		if (active.length > 1) { log?.appendLine("several chat tabs are active; taking the focused group's"); return active.find((tab) => tab.group === vscode.window.tabGroups.activeTabGroup) || active[0] }
+		await delay(TAB_POLL_MS)
+	}
+	const remaining = chatTabs()
+	return remaining.length === 1 ? remaining[0] : undefined		// last resort, and only once the wait is over: the sole chat tab in this window is the one we revealed
+}
+
+function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
 // --- OPENING A CONVERSATION ---
 
-/* Reveal the conversation in the Claude Code panel. That command is internal to the other extension, so it is probed once and falls back to a terminal resume. */
+/* Open a conversation, in whichever window is the right one. A conversation another window already has a
+   tab for is handed to that window rather than opened again here — two panels on one conversation is the
+   thing this avoids. Everything else opens locally. */
 async function openSession(sessionId: string, context?: vscode.ExtensionContext): Promise<void> {
 	if (!sessionId) return
+	const elsewhere = sharedTabs?.windowFor(sessionId) || 0
+	log?.appendLine(`open ${sessionId.slice(0, 8)} — ${describeSharing()} → ${elsewhere && elsewhere !== process.pid ? `hand to ${elsewhere}` : "open here"}`)
+	if (elsewhere && elsewhere !== process.pid) return void handOver(elsewhere, sessionId, context)
+	await revealHere(sessionId, context)
+}
+
+/* Bring this window to the front. VS Code deliberately exposes no API for it — microsoft/vscode#51078 has
+   been open since 2018 — so the only way is to ask its own CLI to open what this window already has open:
+   the running instance recognises the workspace, opens nothing new, and raises the window. The workspace
+   file is used when there is one, because a multi-root window is matched by that and not by its first
+   folder. Code.exe takes the same arguments as the `code` shim, and using it avoids depending on the shim
+   being on PATH or on a shell to run a .cmd. */
+function raiseWindow(): void {
+	const target = vscode.workspace.workspaceFile?.fsPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+	if (!target) return		// nothing identifies this window, and a bare `code` would open an empty one
+	log?.appendLine(`raising this window through ${process.execPath} ${target}`)
+	/* The extension host is Electron running as Node, and it says so through ELECTRON_RUN_AS_NODE in its
+	   own environment. A child inheriting that runs Code.exe as a bare Node interpreter, which treats the
+	   workspace path as a script to execute — it does not raise anything. Dropping the variable is what
+	   makes the same binary behave as the editor's CLI. */
+	const env = { ...process.env }
+	delete env.ELECTRON_RUN_AS_NODE
+	try {
+		const raiser = execFile(process.execPath, [target], { env }, () => { /* the CLI's own output is of no interest */ })
+		raiser.unref()		// it outlives the call by design; nothing here waits for it
+	} catch (err) { log?.appendLine(`could not raise the window: ${String(err)}`) }
+}
+
+/* Three different situations read the same in a log line unless they are spelled out: this window is not
+   sharing at all, no window has published anything, or the windows are there and none of them holds the
+   conversation that was clicked. */
+function describeSharing(): string {
+	if (!sharedTabs) return "cross-window sharing never started here"
+	return sharedTabs.describeWindows() || "no window has published any chat tabs"
+}
+
+const HANDOVER_MS = 2500		// how long the other window gets to answer before this one opens it after all
+
+/* Ask the window holding the tab to bring it up. It cannot be called into directly, so the request goes
+   through the shared record and is answered on its file-change event. A window running an older build, or
+   one wedged badly enough not to answer, leaves the request sitting there — so it is checked afterwards
+   and the conversation opens here instead rather than the click doing nothing. */
+function handOver(windowPid: number, sessionId: string, context?: vscode.ExtensionContext): void {
+	const folder = sharedTabs?.folderOf(windowPid) || ""
+	log?.appendLine(`handing ${sessionId} to the window on ${folder || windowPid}`)
+	sharedTabs?.requestOpen(windowPid, sessionId)
+	vscode.window.setStatusBarMessage(`Opening in the ${folder ? projectName(folder) : "other"} window`, 4000)
+	setTimeout(() => {
+		if (sharedTabs?.pendingOpen(windowPid) !== sessionId) return		// answered, as it should be
+		log?.appendLine(`the window on ${folder || windowPid} did not answer; opening here instead`)
+		void revealHere(sessionId, context)
+	}, HANDOVER_MS)
+}
+
+/* Reveal the conversation in this window's Claude Code panel. That command is internal to the other
+   extension, so it is probed once and falls back to a terminal resume. */
+async function revealHere(sessionId: string, context?: vscode.ExtensionContext): Promise<void> {
 	const row = monitor?.rowFor(sessionId)
-	if (!(await confirmCrossWindow(row))) return
 	if (context && monitor) {
 		monitor.markSeen(sessionId, Date.now())		// a finished conversation stops asking to be reviewed once opened
 		void context.globalState.update(SEEN_KEY, monitor.pruneSeen())
 	}
 	await openPendingPlan(row)		// before the conversation, so the Claude panel ends up focused
-	if (context && row?.state === "closed") void explainStaleTab(context)
+	if (context && row?.state === "killed") void explainStaleTab(context)
 	if (openCommandAvailable === undefined) openCommandAvailable = (await vscode.commands.getCommands(true)).includes(OPEN_COMMAND)
 	if (openCommandAvailable) {
 		try { return void await vscode.commands.executeCommand(OPEN_COMMAND, sessionId) }
@@ -135,24 +334,11 @@ async function explainStaleTab(context: vscode.ExtensionContext): Promise<void> 
 
 /* A conversation blocked on ExitPlanMode is asking you to read something, so show the plan too. */
 async function openPendingPlan(row: SessionRow | undefined): Promise<void> {
-	if (!row?.planFile || !isWaiting(row.state)) return
+	if (!row?.planFile || !needsAttention(row.state)) return
 	if (!fs.existsSync(row.planFile)) return		// plan files are cleaned up independently of transcripts
 	try {
 		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(row.planFile)), { preview: false, viewColumn: vscode.ViewColumn.One })
 	} catch { /* an unopenable plan must not block the conversation */ }
-}
-
-/* A live session attached in another window would get a second panel on the same transcript, so ask first. */
-async function confirmCrossWindow(row: SessionRow | undefined): Promise<boolean> {
-	if (!row || !row.live || !row.cwd) return true
-	const folders = vscode.workspace.workspaceFolders || []
-	if (folders.some((folder) => canonical(folder.uri.fsPath) === canonical(row.cwd))) return true
-	const choice = await vscode.window.showWarningMessage(
-		`"${row.title}" is running in ${projectName(row.cwd)}, outside this window.`,
-		{ modal: true, detail: "Opening it here attaches a second panel to the same conversation. Its own window is usually the better place to answer it." },
-		"Open Anyway"
-	)
-	return choice === "Open Anyway"
 }
 
 function resumeInTerminal(sessionId: string, cwd: string): void {
@@ -371,24 +557,9 @@ async function copySessionId(sessionId: string): Promise<void> {
 
 // --- PANEL STATE ---
 
-/* Resolve which project the dropdown shows: the remembered choice, else the active workspace, else everything. */
-function resolveSelected(context: vscode.ExtensionContext, data: PanelData): string {
-	const remembered = context.workspaceState.get<string>(SELECTED_KEY)
-	if (remembered !== undefined) return data.projects.some((project) => project.cwd === remembered) ? remembered : ""
-	if (vscode.workspace.getConfiguration("claudeMonitor").get<string>("defaultProjectFilter", "active") !== "active") return ""
-	return data.projects.some((project) => project.cwd === data.activeCwd) ? data.activeCwd : ""		// fall back to all rather than an empty panel
-}
-
-function selectProject(context: vscode.ExtensionContext, cwd: string): void {
-	void context.workspaceState.update(SELECTED_KEY, cwd)
-	if (latest) publish(context, latest)
-}
-
-function publish(context: vscode.ExtensionContext, data: PanelData): void {
-	latest = data
-	const selectedCwd = resolveSelected(context, data)
-	view?.post({ ...data, selectedCwd })
-	remote?.setTarget(selectedCwd || data.activeCwd)
+function publish(data: PanelData): void {
+	view?.post(data)
+	remote?.setTarget(data.activeCwd)		// the list shows every workspace, so a bridge belongs to the folder this window has open
 	updateStatusItem(data.needsInputTotal)
 	publishRemoteState()
 }
@@ -411,7 +582,7 @@ function publishRemoteState(): void {
 
 function announce(row: SessionRow): void {
 	if (!vscode.workspace.getConfiguration("claudeMonitor").get<boolean>("notifyOnNeedsInput", false)) return
-	if (!isWaiting(row.state)) return
+	if (!needsAttention(row.state)) return
 	void vscode.window.showInformationMessage(`${row.title} needs input — ${row.tool}`, "Open").then((choice) => {
 		if (choice === "Open") void openSession(row.sessionId)
 	})
@@ -467,9 +638,8 @@ function readConfig(): MonitorConfig {
 		tailBytes: config.get<number>("tailBytes", 131072),
 		staleToolSeconds: config.get<number>("staleToolSeconds", 90),
 		preciseStatus: config.get<boolean>("preciseStatus", false),
-		showClosed: config.get<boolean>("showClosed", true),
+		showClosed: config.get<boolean>("showClosed", false),
 		pinNeedsInput: config.get<boolean>("pinNeedsInput", true),
-		groupByProject: config.get<boolean>("groupByProject", false),
 		promptPreviewLines: config.get<number>("promptPreviewLines", 2),
 		claudePath: config.get<string>("claudePath", "")
 	}

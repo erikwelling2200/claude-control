@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { bridgesByCwd, type BridgeInfo } from "./bridge"
-import { readAgents, readProcesses, readRegistry } from "./live"
+import { isAlive, readAgents, readProcesses, readRegistry } from "./live"
 import { canonical, projectName, projectsDir, sessionsDir, spoolDir } from "./paths"
 import { listTranscripts, scan, scanOne } from "./scanner"
 import { activityLabel, HookSignals, resolveState } from "./status"
@@ -23,7 +23,6 @@ export interface MonitorConfig {
 	preciseStatus: boolean
 	showClosed: boolean
 	pinNeedsInput: boolean
-	groupByProject: boolean
 	promptPreviewLines: number
 	claudePath: string
 }
@@ -40,6 +39,9 @@ export class Monitor {
 	private states = new Map<string, SessionState>()
 	private seen = new Map<string, number>()		// sessionId -> when the user last opened it
 	private excluded = new Set<string>()		// sessions the extension created itself and must not show
+	private tabbed = new Set<string>()		// conversations some running window has a chat tab for, whether or not it has been opened
+	private killed = new Set<string>()		// sessions killed from the panel, which no liveness source can rule out yet
+	private detached = new Set<string>()		// conversations that had a chat tab and have none now; their processes may well still be running
 	private watchers = new Map<string, fs.FSWatcher>()
 	private timers: NodeJS.Timeout[] = []
 	private debounce: NodeJS.Timeout | undefined
@@ -221,18 +223,27 @@ export class Monitor {
 		}
 		if (Date.now() - this.agentsAt < AGENTS_TTL_MS) {
 			for (const [sessionId, session] of this.agents) {
-				if (!merged.has(sessionId)) merged.set(sessionId, session)
+				if (merged.has(sessionId)) continue
+				if (session.pid && !isAlive(session.pid, "")) continue		// the CLI's answer is up to AGENTS_TTL_MS old, and a row must go the moment its process does
+				merged.set(sessionId, session)
 			}
+		}
+		/* Everything above is evidence of a real process, so a killed session turning up in one means it has
+		   been resumed and the kill is history. What must not revive it is the writing window below: its
+		   transcript was appended to seconds ago, by the very run that was killed. */
+		for (const sessionId of this.killed) {
+			if (merged.has(sessionId)) this.killed.delete(sessionId)
 		}
 		const now = Date.now()
 		for (const record of this.store.all()) {
-			if (merged.has(record.sessionId) || now - record.mtimeMs > WRITING_WINDOW_MS) continue
+			if (merged.has(record.sessionId) || this.killed.has(record.sessionId) || now - record.mtimeMs > WRITING_WINDOW_MS) continue
 			merged.set(record.sessionId, { pid: 0, sessionId: record.sessionId, cwd: record.cwd, startedAt: 0, name: "", kind: "writing", procStart: "" })
 		}
 		return merged
 	}
 
-	build(): PanelData {
+	/* `includeClosed` is for lookups by id, which must still find a conversation the panel is hiding. */
+	build(includeClosed = false): PanelData {
 		const now = Date.now()
 		const rows: SessionRow[] = []
 		const bridges = this.activeBridges()
@@ -241,6 +252,9 @@ export class Monitor {
 			const live = this.live.get(record.sessionId)
 			const signal = this.signals.get(record.sessionId)
 			const cwd = canonical(record.cwd)		// one spelling per folder, so the project filter and the bridge lookup agree
+			/* The row states the process's truth: "killed" means no process, whatever any tab still shows.
+			   Whether a tab exists is a separate question, answered below where visibility is decided —
+			   so `pid` and `live` stay usable even for a conversation the list is about to hide. */
 			let state = resolveState({
 				record,
 				live,
@@ -274,20 +288,38 @@ export class Monitor {
 				changed: changedInRun(record, state)
 			})
 		}
-		this.notifyTransitions(rows)
+		this.notifyTransitions(rows)		// transitions are watched on every conversation, including ones the panel hides
 		rows.sort(compareRows(this.config.pinNeedsInput))
+		/* Filtering happens here rather than in the webview so the project counts, the "n of m" header and
+		   the needs-input badge all describe the same set of rows the list shows. */
+		const visible = includeClosed ? rows : rows.filter((row) => this.shows(row))
 		return {
-			rows,
-			projects: buildProjects(rows),
+			rows: visible,
+			workspaces: buildWorkspaces(visible),
 			activeCwd: canonical(this.activeCwd),
-			selectedCwd: "",		// filled in by the host, which owns the remembered choice
-			needsInputTotal: rows.filter((row) => isWaiting(row.state)).length,
+			needsInputTotal: visible.filter((row) => needsAttention(row.state)).length,
 			preciseStatus: this.config.preciseStatus,
 			promptPreviewLines: this.config.promptPreviewLines,
-			groupByProject: this.config.groupByProject,
-			showClosed: this.config.showClosed,
 			usage: readUsage()
 		}
+	}
+
+	/* Whether a conversation belongs in the list, which is where the process and its chat tab finally meet:
+
+	     tab and process      an ordinary row
+	     tab, no process      shown as killed — a tab someone can still see is always accounted for, and
+	                          this is what a tab VS Code restored but nobody has opened yet looks like
+	     process, no tab      hidden, once some window has reported the tab gone; nobody can reach it
+	     no tab ever          the showClosed setting decides
+
+	   The last case is a conversation no window has ever had a tab for — one from a terminal, or from
+	   before this machine's windows were started. Nothing can say whether it was ever on screen, so the
+	   user's setting is the only honest answer, and a running terminal session is never hidden by it. */
+	private shows(row: SessionRow): boolean {
+		if (this.detached.has(row.sessionId)) return false
+		if (row.state !== "killed") return true
+		if (this.tabbed.has(row.sessionId)) return true
+		return this.config.showClosed
 	}
 
 	/* Which folders currently have a Remote Control bridge, and which conversation owns each. Checked once per distinct folder rather than per row. */
@@ -303,6 +335,25 @@ export class Monitor {
 
 	setSeen(seen: Record<string, number>): void {
 		this.seen = new Map(Object.entries(seen))
+	}
+
+	/* What the windows between them can see, from the shared record. Neither set says anything about
+	   processes: a conversation can lose every tab and keep running, or hold a tab with nothing behind it,
+	   and the panel needs both facts separately. */
+	setTabs(tabbed: Set<string>, detached: Set<string>): void {
+		if (sameSet(tabbed, this.tabbed) && sameSet(detached, this.detached)) return
+		this.tabbed = new Set(tabbed)
+		this.detached = new Set(detached)
+		this.emit()
+	}
+
+	/* Record that a session was killed from the panel. Its process is gone, but its transcript is fresh
+	   enough that the writing-window heuristic would keep calling it live for another 45 seconds. */
+	markKilled(sessionId: string): void {
+		if (!sessionId) return
+		this.killed.add(sessionId)
+		this.live = this.liveNow()
+		this.emit()
 	}
 
 	/* Hide a session the extension itself created — the throwaway used to refresh usage limits would otherwise flash up as a row. */
@@ -326,7 +377,7 @@ export class Monitor {
 		for (const row of rows) {
 			const previous = this.states.get(row.sessionId)
 			this.states.set(row.sessionId, row.state)
-			if (previous && previous !== row.state && isWaiting(row.state) && !isWaiting(previous)) this.onNeedsInput?.(row)
+			if (previous && previous !== row.state && needsAttention(row.state) && !needsAttention(previous)) this.onNeedsInput?.(row)
 		}
 		const seen = new Set(rows.map((row) => row.sessionId))
 		for (const sessionId of this.states.keys()) {
@@ -340,13 +391,17 @@ export class Monitor {
 	}
 
 	rowFor(sessionId: string): SessionRow | undefined {
-		return this.build().rows.find((row) => row.sessionId === sessionId)
+		return this.build(true).rows.find((row) => row.sessionId === sessionId)
 	}
 }
 
 // --- HELPERS ---
 
-export function isWaiting(state: SessionState): boolean { return state === "needs-input" || state === "needs-input?" }
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+	return a.size === b.size && [...a].every((value) => b.has(value))
+}
+
+export function needsAttention(state: SessionState): boolean { return state === "needs-input" || state === "needs-input?" }
 
 const AGENTS_TTL_MS = 120000		// how long the CLI's answer is trusted after it was taken
 const WRITING_WINDOW_MS = 45000		// a transcript appended this recently is being written by something alive
@@ -362,7 +417,7 @@ const MAX_CHIPS = 40
 
 /* Files touched by the run that just finished. Only offered once the run is over, and scoped to edits after the last user prompt so a chip list describes one run rather than the whole session. Claude also edits its own scratch files (throwaway .mjs scripts under /tmp) and creates-then-deletes working files, so only edits inside the project that still exist are news. */
 function changedInRun(record: TranscriptRecord, state: SessionState): ChangedFile[] {
-	if (state !== "finished" && state !== "reviewed") return []
+	if (state !== "finished" && state !== "reviewed" && state !== "waiting") return []		// a waiting run has stopped editing for now, so its chips are worth showing too
 	const since = record.lastUserTurnAt || 0
 	const inRun = record.changed.filter((file) => file.at >= since)
 	return (inRun.length ? inRun : record.changed)		// a run whose prompt fell outside the tail still lists what we saw
@@ -394,15 +449,16 @@ function mergeLive(agents: Map<string, LiveSession>, registry: Map<string, LiveS
 function compareRows(pinNeedsInput: boolean): (a: SessionRow, b: SessionRow) => number {
 	return (a, b) => {
 		if (pinNeedsInput) {
-			const waiting = Number(isWaiting(b.state)) - Number(isWaiting(a.state))
+			const waiting = Number(needsAttention(b.state)) - Number(needsAttention(a.state))
 			if (waiting) return waiting
 		}
 		return b.lastActivity - a.lastActivity
 	}
 }
 
-/* Distinct projects with counts, ordered by how recently each was active. */
-function buildProjects(rows: SessionRow[]): ProjectOption[] {
+/* One entry per folder that has conversations, ordered by how recently each was active — the list groups
+   under these, so the labels have to be distinct even when two folders share a basename. */
+function buildWorkspaces(rows: SessionRow[]): ProjectOption[] {
 	const byCwd = new Map<string, ProjectOption & { recent: number }>()
 	for (const row of rows) {
 		if (!row.cwd) continue
@@ -417,16 +473,37 @@ function buildProjects(rows: SessionRow[]): ProjectOption[] {
 	return disambiguate(projects).map(({ cwd, name, count }) => ({ cwd, name, count }))
 }
 
-/* Different folders can share a basename — several sessions run in a "scratchpad". Qualify only the colliding ones with their parent, so the dropdown never shows two identical labels. */
-function disambiguate<T extends { cwd: string, name: string }>(projects: T[]): T[] {
-	const counts = new Map<string, number>()
-	for (const project of projects) counts.set(project.name, (counts.get(project.name) || 0) + 1)
-	for (const project of projects) {
-		if ((counts.get(project.name) || 0) < 2) continue
-		const parent = path.basename(path.dirname(project.cwd))
-		if (parent) project.name = `${project.name} · ${parent}`
+/* Different folders can share a basename — several sessions run in a "scratchpad", and two checkouts of
+   one repo agree all the way up. Each round qualifies only the labels that are still colliding with one
+   more level of the path, so a unique name stays short while an ambiguous one earns its context. Two
+   folders that agree on everything up to MAX_QUALIFIERS fall back to their full paths, which cannot
+   collide — a list of foldable groups must never show the same heading twice. */
+const MAX_QUALIFIERS = 3
+
+function disambiguate<T extends { cwd: string, name: string }>(workspaces: T[]): T[] {
+	for (let depth = 1; depth <= MAX_QUALIFIERS; depth++) {
+		const clashing = workspaces.filter((workspace) => tally(workspaces).get(workspace.name)! > 1)
+		if (!clashing.length) return workspaces
+		for (const workspace of clashing) workspace.name = qualify(workspace.cwd, depth)
 	}
-	return projects
+	for (const workspace of workspaces) {
+		if (tally(workspaces).get(workspace.name)! > 1) workspace.name = workspace.cwd
+	}
+	return workspaces
+}
+
+function tally(workspaces: { name: string }[]): Map<string, number> {
+	const counts = new Map<string, number>()
+	for (const workspace of workspaces) counts.set(workspace.name, (counts.get(workspace.name) || 0) + 1)
+	return counts
+}
+
+/* "CompanionApp · Assets/PluginSystems" — the folder itself, then as many ancestors as it takes. */
+function qualify(cwd: string, depth: number): string {
+	const segments = cwd.split(/[/\\]+/).filter(Boolean)
+	const base = segments[segments.length - 1] || cwd
+	const ancestors = segments.slice(Math.max(0, segments.length - 1 - depth), segments.length - 1)
+	return ancestors.length ? `${base} · ${ancestors.join("/")}` : base
 }
 
 /* Exposed for the probe so it can report scan cost without duplicating the pipeline. */

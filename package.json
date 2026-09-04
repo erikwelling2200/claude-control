@@ -151,27 +151,13 @@
 				},
 				"claudeMonitor.showClosed": {
 					"type": "boolean",
-					"default": true,
-					"description": "Show conversations whose Claude process is no longer running."
+					"default": false,
+					"description": "Keep showing conversations with no process and no chat tab anywhere — old terminal sessions, and windows that have since been closed. A conversation whose tab is still open is always listed."
 				},
 				"claudeMonitor.pinNeedsInput": {
 					"type": "boolean",
 					"default": true,
 					"description": "Pin conversations waiting on you to the top of the list."
-				},
-				"claudeMonitor.defaultProjectFilter": {
-					"type": "string",
-					"enum": [
-						"active",
-						"all"
-					],
-					"default": "active",
-					"description": "Which project the filter selects on load. 'active' preselects the project of the current workspace."
-				},
-				"claudeMonitor.groupByProject": {
-					"type": "boolean",
-					"default": false,
-					"description": "Group rows under project headings instead of a flat recency list."
 				},
 				"claudeMonitor.notifyOnNeedsInput": {
 					"type": "boolean",
@@ -212,6 +198,7 @@
 		"probe": "node esbuild.mjs --probe && node dist/probe.mjs",
 		"hooktest": "esbuild --bundle --platform=node --target=node20 --format=esm --log-level=error tools/hooktest.ts --outfile=dist/hooktest.mjs && node dist/hooktest.mjs",
 		"package": "vsce package --no-dependencies",
+		"deploy": "node esbuild.mjs && node tools/deploy.mjs",
 		"statetest": "esbuild --bundle --platform=node --target=node20 --format=esm --log-level=error tools/statetest.ts --outfile=dist/statetest.mjs && node dist/statetest.mjs",
 		"paneltest": "esbuild --bundle --platform=node --target=node20 --format=esm --log-level=error tools/paneltest.ts --outfile=dist/paneltest.mjs && node dist/paneltest.mjs",
 		"test": "npm run statetest && npm run hooktest && npm run paneltest"

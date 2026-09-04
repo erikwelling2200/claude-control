@@ -107,12 +107,12 @@ export interface StateInput {
 /* Resolve one conversation's state. Hook signals only win while they are at least as fresh as the transcript, so a stale event can never pin a row. */
 export function resolveState(input: StateInput): SessionState {
 	const { record, live, signal, now } = input
-	if (!live) return "closed"
+	if (!live) return "killed"
 	const fresh = !!signal && signal.at + FRESHNESS_TOLERANCE_MS >= record.lastRecordAt
-	if (fresh && signal!.state === "closed") return "closed"
+	if (fresh && signal!.state === "closed") return "killed"
 	if (fresh && signal!.state === "needs-input") return "needs-input"
 	if (record.errorMessage) return "error"
-	if (fresh && signal!.state === "finished") return "finished"
+	if (fresh && signal!.state === "finished") return settled(record)
 	if (record.interrupted) return "finished"		// the user hit stop; no end_turn or Stop hook is ever written for an interrupted run
 	if (record.pendingTool) {
 		if (ALWAYS_ASKS.has(record.pendingTool)) return "needs-input"		// these tools exist to ask, so no waiting on a timer
@@ -122,9 +122,12 @@ export function resolveState(input: StateInput): SessionState {
 	}
 	if (fresh && signal!.state === "busy") return "busy"
 	if (record.lastUserTurnAt > record.lastAssistantAt) return "busy"		// the user spoke last, so a reply is being generated
-	if (record.endTurn) return "finished"
+	if (record.endTurn) return settled(record)
 	return "busy"
 }
+
+/* A turn that ended with a background task still out is not done: the task's notification will wake the session, so the row must not read as finished. */
+function settled(record: TranscriptRecord): SessionState { return record.pendingTasks > 0 ? "waiting" : "finished" }
 
 /* Short label describing what the conversation is doing right now. */
 export function activityLabel(state: SessionState, record: TranscriptRecord): string {
@@ -132,9 +135,10 @@ export function activityLabel(state: SessionState, record: TranscriptRecord): st
 		case "busy": return record.pendingTool ? `Running: ${record.pendingTool}` : "Thinking"
 		case "needs-input": return record.pendingTool ? `Needs input: ${record.pendingTool}` : "Needs input"
 		case "needs-input?": return record.pendingTool ? `Waiting? ${record.pendingTool}` : "Waiting?"
+		case "waiting": return "Waiting"
 		case "error": return record.errorMessage || "API error"
 		case "finished": return record.interrupted ? "Interrupted" : "Finished"
 		case "reviewed": return record.interrupted ? "Interrupted" : "Finished"
-		case "closed": return "Closed — click to resume"
+		case "killed": return "Killed — click to resume"
 	}
 }

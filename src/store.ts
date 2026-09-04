@@ -5,7 +5,7 @@ import type { TranscriptRecord } from "./types"
 // --- SCHEMA ---
 
 /* Bump when TranscriptRecord changes shape so old caches self-invalidate instead of half-loading. */
-const SCHEMA = 5
+const SCHEMA = 6
 const SAVE_DEBOUNCE_MS = 2000
 
 interface CacheFile {
