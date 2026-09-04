@@ -2,20 +2,20 @@
 	"name": "claude-control-pane",
 	"displayName": "Claude Control Pane",
 	"description": "Overview of every Claude Code conversation on this machine, newest first, with live busy / needs-input / finished indicators.",
-	"version": "0.1.0",
-	"publisher": "cronoklee",
+	"version": "0.1.1",
+	"publisher": "erikwelling2200",
 	"author": {
-		"name": "cronoklee",
-		"url": "https://github.com/cronoklee"
+		"name": "erikwelling2200",
+		"url": "https://github.com/erikwelling2200"
 	},
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/cronoklee/claude-control"
+		"url": "https://github.com/erikwelling2200/claude-control"
 	},
-	"homepage": "https://github.com/cronoklee",
+	"homepage": "https://github.com/erikwelling2200/claude-control",
 	"bugs": {
-		"url": "https://github.com/cronoklee/claude-control/issues"
+		"url": "https://github.com/erikwelling2200/claude-control/issues"
 	},
 	"icon": "media/icon_128.png",
 	"keywords": [
